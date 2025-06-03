@@ -58,16 +58,27 @@ run_script "01_convert_sheet_to_fasta.R" "$INPUT_FILE"
 echo "Running AlphaFold to model the receptor sequence..."
 mkdir -p intermediate_files/receptor_only
 
-conda activate alphafold
+conda activate localfold
 colabfold_batch --num-models 1 ./intermediate_files/receptor_full_length.fasta ./intermediate_files/receptor_only/
 
-
-
-
-
+# run LRR-Annotation to extract LRRs from receptor sequence
+echo "Running LRR-Annotation to extract LRRs from receptor sequence..."
+mkdir -p intermediate_files/lrr_annotation_plots
+mkdir -p intermediate_files/pdb_for_lrr_annotator
 run_script "02_alphafold_to_lrr_annotation.py"
-run_script "03_parse_lrr_annotations.py"
-run_script "04_chemical_conversion.R"
-run_script "05_data_prep_for_training.py"
 
-echo "Pipeline preparationcompleted successfully!" 
+
+
+#run_script "03_parse_lrr_annotations.py"
+#run_script "04_chemical_conversion.R"
+#run_script "05_data_prep_for_training.py"
+#echo "Data preparation completed successfully!" 
+#conda activate mamp_prediction
+
+
+
+
+
+
+
+
