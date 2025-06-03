@@ -1,5 +1,21 @@
 #!/bin/bash
-echo "Running data preparation pipeline..."
+
+# Check if input file is provided
+if [ $# -eq 0 ]; then
+    echo "Error: No input file provided"
+    echo "Usage: bash run_prediction_pipeline.sh <input_excel_file>"
+    exit 1
+fi
+
+INPUT_FILE=$1
+
+# Check if file exists
+if [ ! -f "$INPUT_FILE" ]; then
+    echo "Error: File '$INPUT_FILE' does not exist"
+    exit 1
+fi
+
+echo "Running data preparation pipeline with input file: $INPUT_FILE"
 
 # Change to the main project directory
 cd "$(dirname "$0")"
@@ -36,7 +52,7 @@ echo "----------------------------------------"
 
 # create intermediate files for model prediction
 mkdir -p intermediate_files
-run_script "01_convert_sheet_to_fasta.R"
+run_script "01_convert_sheet_to_fasta.R" "$INPUT_FILE"
 
 # run AlphaFold locally to extract ectodomin of receptor sequence
 echo "Running AlphaFold to model the receptor sequence..."
