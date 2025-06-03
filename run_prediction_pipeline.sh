@@ -15,9 +15,9 @@ run_script() {
     echo "Running $script..."
     
     if [[ $script == *.R ]]; then
-        Rscript "06_scripts_ml/$script" 2>&1 | tee "$log_file"
+        Rscript "scripts/$script" 2>&1 | tee "$log_file"
     else
-        python "06_scripts_ml/$script" 2>&1 | tee "$log_file"
+        python "scripts/$script" 2>&1 | tee "$log_file"
     fi
     
     if [ ${PIPESTATUS[0]} -ne 0 ]; then
@@ -34,8 +34,21 @@ run_script() {
 echo "Starting MAMP prediction pipeline..."
 echo "----------------------------------------"
 
-run_script "00_visualize_input_data.R"
-run_script "01_prep_receptor_sequences_for_modeling.R"
+# create intermediate files for model prediction
+mkdir -p intermediate_files
+run_script "01_convert_sheet_to_fasta.R"
+
+# run AlphaFold locally to extract ectodomin of receptor sequence
+echo "Running AlphaFold to model the receptor sequence..."
+mkdir -p intermediate_files/receptor_only
+
+conda activate alphafold
+colabfold_batch --num-models 1 ./intermediate_files/receptor_full_length.fasta ./intermediate_files/receptor_only/
+
+
+
+
+
 run_script "02_alphafold_to_lrr_annotation.py"
 run_script "03_parse_lrr_annotations.py"
 run_script "04_chemical_conversion.R"
