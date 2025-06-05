@@ -26,14 +26,22 @@ mkdir -p logs
 # Function to run a script and check its exit status
 run_script() {
     local script=$1
-    local log_file="logs/$(basename "$script" .py).log"
+    shift  # Remove the first argument (script name) so $@ contains only the additional arguments
+    
+    # Create appropriate log file name based on script type
+    local log_file
+    if [[ $script == *.R ]]; then
+        log_file="logs/$(basename "$script" .R).R.log"
+    else
+        log_file="logs/$(basename "$script" .py).log"
+    fi
     
     echo "Running $script..."
     
     if [[ $script == *.R ]]; then
-        Rscript "scripts/$script" 2>&1 | tee "$log_file"
+        Rscript "scripts/$script" "$@" 2>&1 | tee "$log_file"
     else
-        python "scripts/$script" 2>&1 | tee "$log_file"
+        python "scripts/$script" "$@" 2>&1 | tee "$log_file"
     fi
     
     if [ ${PIPESTATUS[0]} -ne 0 ]; then
@@ -58,14 +66,14 @@ run_script "01_convert_sheet_to_fasta.R" "$INPUT_FILE"
 echo "Running AlphaFold to model the receptor sequence..."
 mkdir -p intermediate_files/receptor_only
 
-conda activate localfold
-colabfold_batch --num-models 1 ./intermediate_files/receptor_full_length.fasta ./intermediate_files/receptor_only/
+#conda activate localfold
+#colabfold_batch --num-models 1 ./intermediate_files/receptor_full_length.fasta ./intermediate_files/receptor_only/
 
 # run LRR-Annotation to extract LRRs from receptor sequence
-echo "Running LRR-Annotation to extract LRRs from receptor sequence..."
-mkdir -p intermediate_files/lrr_annotation_plots
-mkdir -p intermediate_files/pdb_for_lrr_annotator
-run_script "02_alphafold_to_lrr_annotation.py"
+#echo "Running LRR-Annotation to extract LRRs from receptor sequence..."
+#mkdir -p intermediate_files/lrr_annotation_plots
+#mkdir -p intermediate_files/pdb_for_lrr_annotator
+#run_script "02_alphafold_to_lrr_annotation.py"
 
 
 
