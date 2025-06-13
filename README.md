@@ -6,23 +6,25 @@ This repository contains the code for mamp-ml, a deep learning approach to epito
 * __Danielle M. Stevens__ <a itemprop="sameAs" content="https://orcid.org/0000-0001-5630-137X" href="https://orcid.org/0000-0001-5630-137X" target="orcid.widget" rel="me noopener noreferrer" style="vertical-align:top;"><img src="https://orcid.org/sites/default/files/images/orcid_16x16.png" style="width:1em;margin-right:.5em;" alt="ORCID iD icon"></a>   </br>
 _Dept. of Plant & Microbial Biology, University of California, Berkeley_
 
-* David Yang
-Center for Computational Biology, University of California, Berkeley
+* __David Yang__ </br>
+_Center for Computational Biology, University of California, Berkeley_
 
-* Tatiana Liang
-Dept. of Plant & Microbial Biology, University of California, Berkeley
+* __Tatiana Liang__ </br>
+_Dept. of Plant & Microbial Biology, University of California, Berkeley_
 
-* Tianrun Li
-Dept. of Plant Pathology, University of California, Davis
+* __Tianrun Li__ <a itemprop="sameAs" content="https://orcid.org/0000-0002-8589-4634" href="https://orcid.org/0000-0002-8589-4634" target="orcid.widget" rel="me noopener noreferrer" style="vertical-align:top;"><img src="https://orcid.org/sites/default/files/images/orcid_16x16.png" style="width:1em;margin-right:.5em;" alt="ORCID iD icon"></a> </br> 
+_Dept. of Plant Pathology, University of California, Davis_
 
-* Brandon Vega
-Dept. of Plant & Microbial Biology, University of California, Berkeley
+* __Brandon Vega__ </br>
+_Dept. of Plant & Microbial Biology, University of California, Berkeley_
 
-* Gitta Coaker
-Dept. of Plant Pathology, University of California, Davis
+* __Gitta Coaker__ <a itemprop="sameAs" content="https://orcid.org/0000-0003-0899-2449" href="https://orcid.org/0000-0003-0899-2449" target="orcid.widget" rel="me noopener noreferrer" style="vertical-align:top;"><img src="https://orcid.org/sites/default/files/images/orcid_16x16.png" style="width:1em;margin-right:.5em;" alt="ORCID iD icon"></a> </br>
+_Dept. of Plant Pathology, University of California, Davis_
 
-* Ksenia Krasileva
-Dept. of Plant & Microbial Biology, University of California, Berkeley
+* __Ksenia Krasileva__ <a itemprop="sameAs" content="https://orcid.org/0000-0002-1679-0700" href="https://orcid.org/0000-0002-1679-0700" target="orcid.widget" rel="me noopener noreferrer" style="vertical-align:top;"><img src="https://orcid.org/sites/default/files/images/orcid_16x16.png" style="width:1em;margin-right:.5em;" alt="ORCID iD icon"></a> </br>
+_Dept. of Plant & Microbial Biology, University of California, Berkeley_, </br>
+_Center for Computational Biology, University of California, Berkeley_
+
 
 ## Abstract
 
@@ -40,3 +42,4 @@ Once your excel file with receptor and ligands sequences is prepared (see exampl
 bash run_prediction_pipeline.sh input_data.xlsx
 ```
 
+If you use this tool, please cite the following paper:
