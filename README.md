@@ -42,10 +42,17 @@ Once your excel file with receptor and ligands sequences is prepared (see exampl
 bash run_prediction_pipeline.sh input_data.xlsx
 ```
 
+# Computational requirements:
+
+To run this package locally, we recommend having compute with a NIVDIA GPU available and at least 16 GB RAM and 16 GB VRAM. The main step that is slow + memory intensive is running AlphaFold. While we were able to run predictions on a 1080Ti, we found considerable runtime improvements using RTX A5000 cards. 
+
+
 If you use this tool, please cite the following paper:
 Stevens et al. 2025. Mamp-ml: a deep learning approach to epitope immunogenicity in plants. BioRxiv. 
 DOI:
 
+
+Details on building this pipeline and model can be found in another GitHub Repo: [mamp-prediction-ml](https://github.com/DanielleMStevens/mamp_prediction_ml).
 
 License 
 ----
