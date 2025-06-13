@@ -78,8 +78,8 @@ run_script "02_alphafold_to_lrr_annotation.py"
 
 
 #run_script "03_parse_lrr_annotation.py"
+#run_script "04_data_prep_for_prediction.py" "$INPUT_FILE"
 #run_script "04_chemical_conversion.R"
-#run_script "05_data_prep_for_training.py"
 #echo "Data preparation completed successfully!" 
 #conda activate mamp_prediction
 
