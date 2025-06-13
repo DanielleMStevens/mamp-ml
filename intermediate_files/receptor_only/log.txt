@@ -1,0 +1,5 @@
+2025-06-04 17:16:26,825 Running colabfold 1.5.5 (8c55fc2548823d57bb23c24a6b2573348e6d51c8)
+2025-06-04 17:16:26,862 WARNING: no GPU detected, will be using CPU
+2025-06-04 17:16:27,255 Found 5 citations for tools or databases
+2025-06-04 17:16:27,255 Query 1/2: Solanum_habrochates_scaffold11_CORE (length 1042)
+2025-06-04 17:17:00,291 Padding length to 1052
