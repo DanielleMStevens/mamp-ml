@@ -3,25 +3,25 @@
 This repository contains the code for mamp-ml, a deep learning approach to epitope immunogenicity in plants. If you plan to run on a small number of receptor-epitope combinations (less than 10 receptors), we recommend you use co-lab. If you plan to run on 100-1000s of receptor-epitope combinations, we recommend you install locally, have access to a GPU (at least A5000) and potenitally adjust the code to pull MSAs for receptor structure generation locally (future feature enhancement). To do so, please see info from localcolab fold (link here).
 
 ## Authors
-'- Danielle M. Stevens
+* Danielle M. Stevens
 Dept. of Plant & Microbial Biology, University of California, Berkeley
 
-'-David Yang
+* David Yang
 Center for Computational Biology, University of California, Berkeley
 
-'-Tatiana Liang
+* Tatiana Liang
 Dept. of Plant & Microbial Biology, University of California, Berkeley
 
-'-Tianrun Li
+* Tianrun Li
 Dept. of Plant Pathology, University of California, Davis
 
-'-Brandon Vega
+* Brandon Vega
 Dept. of Plant & Microbial Biology, University of California, Berkeley
 
-'-Gitta Coaker
+* Gitta Coaker
 Dept. of Plant Pathology, University of California, Davis
 
-'-Ksenia Krasileva
+* Ksenia Krasileva
 Dept. of Plant & Microbial Biology, University of California, Berkeley
 
 ## Abstract
@@ -30,8 +30,8 @@ Dept. of Plant & Microbial Biology, University of California, Berkeley
 
 ## General installation and running instructions:
 
-```
 To install the software needed before model prediction, AlphaFold2 via colabfold and LRR-Annotation, we will run the following command:
+```
 bash install_software.sh
 ```
 
