@@ -167,7 +167,7 @@ def run_lrr_annotation(pdb_directory):
                 f.write(f"{pdb_filename}\t{i+1}\t{start}\t{end}\t{len(seq)}\t{results['sequence_length']}\t{results['num_lrr_regions']}\t{seq}\n")
 
     # Cache data
-    cache_dir = Path('./01_LRR_Annotation/cache')
+    cache_dir = Path('./LRR_Annotation/cache')
     cache_dir.mkdir(parents=True, exist_ok=True)
     L.cache(str(cache_dir))
     A.cache_geometry(str(cache_dir))
@@ -182,7 +182,8 @@ def run_lrr_annotation(pdb_directory):
 def main():
     # Set up paths
     project_root = Path(__file__).parent.parent
-    log_file = Path(sys.argv[1]) if len(sys.argv) > 1 else sys.exit("Error: Please provide the path to the ColabFold log.txt file as an argument")
+    #log_file = Path(sys.argv[1]) if len(sys.argv) > 1 else sys.exit("Error: Please provide the path to the ColabFold log.txt file as an argument")
+    log_file = project_root / "intermediate_files" / "receptor_only" / "log.txt"
     scores_file = project_root / "intermediate_files" / "alphafold_scores.txt"
     
     # Source and target directories for PDB files
