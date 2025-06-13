@@ -54,9 +54,15 @@ DOI:
 
 Details on building this pipeline and model can be found in another GitHub Repo: [mamp-prediction-ml](https://github.com/DanielleMStevens/mamp_prediction_ml).
 
+
 License 
 ----
 Code is freely available under the MIT license  
+
+Have data to contribute? 
+----
+We are always looking to improve mamp-ml to improve prediction accuracy and expand to other LRR-PRR receptors and their protein ligands. Please feel free to contact us if you have recently published a dataset or would like to contribute to make this tool better!
+
 
 Contact 
 ----
