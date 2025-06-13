@@ -1,5 +1,8 @@
 # mamp-ml
 
+[![Static Badge](https://img.shields.io/badge/EMBO_Reports-2024?style=flat-square&link=https%3A%2F%2Fdoi.org%2F10.1038%2Fs44319-024-00122-9)](https://doi.org/10.1038/s44319-024-00122-9)
+[![Zenodo DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.8411396.svg)](https://doi.org/10.5281/zenodo.8411396)
+
 This repository contains the code for mamp-ml, a deep learning approach to epitope immunogenicity in plants. If you plan to run on a small number of receptor-epitope combinations (less than 10 receptors), we recommend you use co-lab. If you plan to run on 100-1000s of receptor-epitope combinations, we recommend you install locally, have access to a GPU (at least A5000) and potenitally adjust the code to pull MSAs for receptor structure generation locally (future feature enhancement). To do so, please see info from localcolab fold (link here).
 
 ## Authors
@@ -43,3 +46,14 @@ bash run_prediction_pipeline.sh input_data.xlsx
 ```
 
 If you use this tool, please cite the following paper:
+
+
+
+License 
+----
+Code is freely available under the MIT license  
+
+Contact 
+----
+Please feel free to contact me directly with any questions or issues with the code  
+Chandler Sutherland - [@chandler_suth](https://twitter.com/chandler_suth) - chandlersutherland@berkeley.edu
