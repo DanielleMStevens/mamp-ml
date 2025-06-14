@@ -476,18 +476,10 @@ class ESMBfactorWeightedFeatures(nn.Module):
         1. Combines peptide and receptor sequences with a separator
         2. Tokenizes the combined sequences
         3. Processes chemical features to match tokenized sequence length
+        4. Stores metadata for later use in get_stats
         
         Args:
-            batch: List of individual data samples with format:
-                - Header_Name: Unique identifier
-                - plant_species: Plant species name
-                - receptor: Receptor name
-                - locus_id: Locus identifier
-                - Sequence: Ligand/peptide sequence
-                - receptor_sequence: Receptor sequence
-                - Chemical features for both ligand and receptor:
-                    - sequence_bulkiness, sequence_charge, sequence_hydrophobicity
-                    - receptor_bulkiness, receptor_charge, receptor_hydrophobicity
+            batch: List of individual data samples
                 
         Returns:
             dict: Batch dictionary with processed inputs
@@ -499,9 +491,17 @@ class ESMBfactorWeightedFeatures(nn.Module):
         if separator_token is None:
             raise ValueError("EOS token is None in collate_fn. Check tokenizer configuration.")
 
-        # Extract sequences
+        # Extract sequences and metadata
         sequences = [str(item['peptide_x']) for item in batch]  # Ligand sequences
         receptors = [str(item['receptor_x']) for item in batch]  # Receptor sequences
+        
+        # Store all metadata for later use in get_stats
+        self.header_names = [item.get('Header_Name', '') for item in batch]
+        self.plant_species = [item.get('plant_species', '') for item in batch]
+        self.receptors_meta = [item.get('receptor', '') for item in batch]  # Renamed to avoid conflict
+        self.locus_ids = [item.get('locus_id', '') for item in batch]
+        self.epitope_seqs = sequences
+        self.receptor_seqs = receptors
         
         # Create receptor IDs for B-factor weight lookup using the format: "plant_species|locus_id|receptor"
         receptor_ids = [
@@ -560,10 +560,6 @@ class ESMBfactorWeightedFeatures(nn.Module):
         # Process features for both peptide and receptor
         seq_features = process_features(batch, 'sequence')  # Peptide features
         rec_features = process_features(batch, 'receptor')  # Receptor features
-        
-        # Store sequences for output
-        self.receptor_seqs = receptors
-        self.epitope_seqs = sequences
         
         # Prepare the output dictionary
         batch_output = {
@@ -641,13 +637,13 @@ class ESMBfactorWeightedFeatures(nn.Module):
 
     def get_stats(self, pr, gt=None, train=False, sequences=None):
         """
-        Calculate evaluation metrics and save predictions.
+        Calculate evaluation metrics and save predictions with original metadata.
         
         Args:
             pr: Predicted probabilities
             gt: Ground truth labels (optional)
             train: Whether these are training or test metrics
-            sequences: List of decoded sequences (optional)
+            sequences: List of decoded sequences (optional, not used since we have stored metadata)
             
         Returns:
             dict: Dictionary containing evaluation metrics
@@ -665,39 +661,53 @@ class ESMBfactorWeightedFeatures(nn.Module):
         if gt is not None:
             results_df['ground_truth'] = gt.cpu().numpy()
         
-        # Handle sequences if provided (from evaluate function)
-        if sequences is not None and len(sequences) == len(results_df):
-            # Split sequences back into peptide and receptor parts
-            peptide_seqs = []
-            receptor_seqs = []
-            for seq_pair in sequences:
-                if isinstance(seq_pair, list) and len(seq_pair) >= 2:
-                    peptide_seqs.append(seq_pair[0].strip())
-                    receptor_seqs.append(seq_pair[1].strip())
-                else:
-                    peptide_seqs.append("")
-                    receptor_seqs.append("")
+        # Add original data from stored metadata
+        # Note: These are accumulated across all batches during evaluation, 
+        # but we only have the last batch's data stored in instance variables.
+        # For complete data, we need to handle this differently in the evaluation loop.
+        
+        num_predictions = len(results_df)
+        
+        # Use stored metadata if available and matches the prediction count
+        if (hasattr(self, 'epitope_seqs') and hasattr(self, 'receptor_seqs') and 
+            hasattr(self, 'header_names') and hasattr(self, 'plant_species') and
+            hasattr(self, 'receptors_meta') and hasattr(self, 'locus_ids')):
             
-            results_df['Sequence'] = peptide_seqs
-            results_df['receptor_sequence'] = receptor_seqs
-        else:
-            # Use instance variables as fallback (only works for single batch)
-            if hasattr(self, 'epitope_seqs') and len(self.epitope_seqs) == len(results_df):
+            # For single batch or when metadata matches prediction count
+            if (len(self.epitope_seqs) == num_predictions and 
+                len(self.receptor_seqs) == num_predictions and
+                len(self.header_names) == num_predictions):
+                
+                results_df['Header_Name'] = self.header_names
+                results_df['plant_species'] = self.plant_species
+                results_df['receptor'] = self.receptors_meta
+                results_df['locus_id'] = self.locus_ids
                 results_df['Sequence'] = self.epitope_seqs
                 results_df['receptor_sequence'] = self.receptor_seqs
             else:
-                # Add empty columns if no sequence data is available
-                results_df['Sequence'] = [""] * len(results_df)
-                results_df['receptor_sequence'] = [""] * len(results_df)
-        
-        # Add other metadata columns with empty values
-        results_df['Header_Name'] = ""
-        results_df['plant_species'] = ""
-        results_df['receptor'] = ""
-        results_df['locus_id'] = ""
+                # Metadata doesn't match - likely multi-batch evaluation
+                # Fill with empty values and add a note
+                results_df['Header_Name'] = [""] * num_predictions
+                results_df['plant_species'] = [""] * num_predictions
+                results_df['receptor'] = [""] * num_predictions
+                results_df['locus_id'] = [""] * num_predictions
+                results_df['Sequence'] = [""] * num_predictions
+                results_df['receptor_sequence'] = [""] * num_predictions
+                print(f"Warning: Metadata count mismatch. Predictions: {num_predictions}, "
+                      f"Stored metadata: {len(self.epitope_seqs) if hasattr(self, 'epitope_seqs') else 0}")
+        else:
+            # No stored metadata available
+            results_df['Header_Name'] = [""] * num_predictions
+            results_df['plant_species'] = [""] * num_predictions
+            results_df['receptor'] = [""] * num_predictions
+            results_df['locus_id'] = [""] * num_predictions
+            results_df['Sequence'] = [""] * num_predictions
+            results_df['receptor_sequence'] = [""] * num_predictions
+            print("Warning: No stored metadata available")
         
         # Save predictions to CSV
         results_df.to_csv('predictions.csv', index=False)
+        print(f"Saved predictions to predictions.csv with {len(results_df)} rows")
         
         # Calculate proper evaluation metrics if ground truth is available
         if gt is not None:

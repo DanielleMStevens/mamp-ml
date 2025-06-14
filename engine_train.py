@@ -223,8 +223,8 @@ def evaluate(model, dl, device, args, output_dir):
     metric_logger = misc.MetricLogger(delimiter="  ")
     header = "Test:"
 
-    # Lists to store predictions, ground truth, and losses
-    lists = {"gt": [], "pr": [], "x": [], "loss": []}
+    # Lists to store predictions, ground truth, losses, and metadata
+    lists = {"gt": [], "pr": [], "x": [], "loss": [], "metadata": []}
     
     # Evaluation loop - no gradient computation or parameter updates
     for batch in metric_logger.log_every(dl, 10, header):
@@ -251,6 +251,18 @@ def evaluate(model, dl, device, args, output_dir):
             lists["gt"].append(batch['y'].cpu())
         lists["pr"].append(preds.cpu())
         lists["x"].extend(model_with_losses.batch_decode(batch))
+        
+        # Store metadata from the current batch
+        if hasattr(model_with_losses, 'header_names'):
+            batch_metadata = {
+                'header_names': model_with_losses.header_names,
+                'plant_species': model_with_losses.plant_species,
+                'receptors_meta': model_with_losses.receptors_meta,
+                'locus_ids': model_with_losses.locus_ids,
+                'epitope_seqs': model_with_losses.epitope_seqs,
+                'receptor_seqs': model_with_losses.receptor_seqs
+            }
+            lists["metadata"].append(batch_metadata)
 
         if all_losses:
             total_loss = sum(all_losses.values())
@@ -271,14 +283,32 @@ def evaluate(model, dl, device, args, output_dir):
         )
         # The model's get_stats function is called with only predictions
         model_with_losses = model.module if hasattr(model, "module") else model
-        stats = model_with_losses.get_stats(prob_all, gt=None, train=False, sequences=lists["x"])
+        
+        # Combine all metadata
+        all_metadata = {}
+        if lists["metadata"]:
+            for key in lists["metadata"][0].keys():
+                all_metadata[key] = []
+                for batch_meta in lists["metadata"]:
+                    all_metadata[key].extend(batch_meta[key])
+        
+        stats = model_with_losses.get_stats(prob_all, gt=None, train=False, metadata=all_metadata)
         return stats
     
     gt_all = torch.cat(lists["gt"])
     mean_loss = float(np.mean(lists['loss'])) if lists['loss'] else 0.0
 
     model_with_losses = model.module if hasattr(model, "module") else model
-    stats = model_with_losses.get_stats(prob_all, gt=gt_all, train=False, sequences=lists["x"])  # Fix argument order and pass sequences
+    
+    # Combine all metadata
+    all_metadata = {}
+    if lists["metadata"]:
+        for key in lists["metadata"][0].keys():
+            all_metadata[key] = []
+            for batch_meta in lists["metadata"]:
+                all_metadata[key].extend(batch_meta[key])
+    
+    stats = model_with_losses.get_stats(prob_all, gt=gt_all, train=False, metadata=all_metadata)  # Pass all metadata
 
     # Create plots directory
     plots_dir = Path(output_dir) / 'plots'
