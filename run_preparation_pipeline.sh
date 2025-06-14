@@ -76,6 +76,9 @@ mkdir -p intermediate_files/pdb_for_lrr_annotator
 run_script "02_alphafold_to_lrr_annotation.py"
 run_script "03_parse_lrr_annotation.py"
 
+echo "Generating bandpass b-factor values..."
+python LRR_Annotation/extract_lrr_sequences.py
+
 echo "Preparing data for prediction..."
 run_script "04_data_prep_for_prediction.py" "$INPUT_FILE"
 run_script "05_chemical_conversion.R" "test_data.csv
