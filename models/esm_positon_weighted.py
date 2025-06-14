@@ -635,7 +635,7 @@ class ESMBfactorWeightedFeatures(nn.Module):
         """
         return torch.softmax(logits, dim=-1)
 
-    def get_stats(self, pr, gt=None, train=False, sequences=None):
+    def get_stats(self, pr, gt=None, train=False, sequences=None, metadata=None):
         """
         Calculate evaluation metrics and save predictions with original metadata.
         
@@ -643,7 +643,8 @@ class ESMBfactorWeightedFeatures(nn.Module):
             pr: Predicted probabilities
             gt: Ground truth labels (optional)
             train: Whether these are training or test metrics
-            sequences: List of decoded sequences (optional, not used since we have stored metadata)
+            sequences: List of decoded sequences (optional)
+            metadata: Dictionary containing all metadata from all batches
             
         Returns:
             dict: Dictionary containing evaluation metrics
@@ -661,22 +662,35 @@ class ESMBfactorWeightedFeatures(nn.Module):
         if gt is not None:
             results_df['ground_truth'] = gt.cpu().numpy()
         
-        # Add original data from stored metadata
-        # Note: These are accumulated across all batches during evaluation, 
-        # but we only have the last batch's data stored in instance variables.
-        # For complete data, we need to handle this differently in the evaluation loop.
-        
         num_predictions = len(results_df)
         
-        # Use stored metadata if available and matches the prediction count
-        if (hasattr(self, 'epitope_seqs') and hasattr(self, 'receptor_seqs') and 
-            hasattr(self, 'header_names') and hasattr(self, 'plant_species') and
-            hasattr(self, 'receptors_meta') and hasattr(self, 'locus_ids')):
-            
-            # For single batch or when metadata matches prediction count
-            if (len(self.epitope_seqs) == num_predictions and 
-                len(self.receptor_seqs) == num_predictions and
-                len(self.header_names) == num_predictions):
+        # Use passed metadata if available
+        if metadata and all(key in metadata for key in ['header_names', 'plant_species', 'receptors_meta', 'locus_ids', 'epitope_seqs', 'receptor_seqs']):
+            if len(metadata['epitope_seqs']) == num_predictions:
+                results_df['Header_Name'] = metadata['header_names']
+                results_df['plant_species'] = metadata['plant_species']
+                results_df['receptor'] = metadata['receptors_meta']
+                results_df['locus_id'] = metadata['locus_ids']
+                results_df['Sequence'] = metadata['epitope_seqs']
+                results_df['receptor_sequence'] = metadata['receptor_seqs']
+                print(f"Successfully added metadata for {num_predictions} predictions")
+            else:
+                print(f"Warning: Metadata length mismatch. Predictions: {num_predictions}, Metadata: {len(metadata['epitope_seqs'])}")
+                # Fill with truncated or padded metadata
+                for key, col_name in [('header_names', 'Header_Name'), ('plant_species', 'plant_species'), 
+                                      ('receptors_meta', 'receptor'), ('locus_ids', 'locus_id'),
+                                      ('epitope_seqs', 'Sequence'), ('receptor_seqs', 'receptor_sequence')]:
+                    if len(metadata[key]) >= num_predictions:
+                        results_df[col_name] = metadata[key][:num_predictions]
+                    else:
+                        padded_data = metadata[key] + [""] * (num_predictions - len(metadata[key]))
+                        results_df[col_name] = padded_data
+        else:
+            # Use stored metadata if available (fallback for single batch)
+            if (hasattr(self, 'epitope_seqs') and hasattr(self, 'receptor_seqs') and 
+                hasattr(self, 'header_names') and hasattr(self, 'plant_species') and
+                hasattr(self, 'receptors_meta') and hasattr(self, 'locus_ids') and
+                len(self.epitope_seqs) == num_predictions):
                 
                 results_df['Header_Name'] = self.header_names
                 results_df['plant_species'] = self.plant_species
@@ -684,26 +698,16 @@ class ESMBfactorWeightedFeatures(nn.Module):
                 results_df['locus_id'] = self.locus_ids
                 results_df['Sequence'] = self.epitope_seqs
                 results_df['receptor_sequence'] = self.receptor_seqs
+                print(f"Successfully added stored metadata for {num_predictions} predictions")
             else:
-                # Metadata doesn't match - likely multi-batch evaluation
-                # Fill with empty values and add a note
+                # No metadata available or mismatch
                 results_df['Header_Name'] = [""] * num_predictions
                 results_df['plant_species'] = [""] * num_predictions
                 results_df['receptor'] = [""] * num_predictions
                 results_df['locus_id'] = [""] * num_predictions
                 results_df['Sequence'] = [""] * num_predictions
                 results_df['receptor_sequence'] = [""] * num_predictions
-                print(f"Warning: Metadata count mismatch. Predictions: {num_predictions}, "
-                      f"Stored metadata: {len(self.epitope_seqs) if hasattr(self, 'epitope_seqs') else 0}")
-        else:
-            # No stored metadata available
-            results_df['Header_Name'] = [""] * num_predictions
-            results_df['plant_species'] = [""] * num_predictions
-            results_df['receptor'] = [""] * num_predictions
-            results_df['locus_id'] = [""] * num_predictions
-            results_df['Sequence'] = [""] * num_predictions
-            results_df['receptor_sequence'] = [""] * num_predictions
-            print("Warning: No stored metadata available")
+                print("Warning: No matching metadata available")
         
         # Save predictions to CSV
         results_df.to_csv('predictions.csv', index=False)
@@ -759,6 +763,7 @@ class PeptideSeqWithReceptorDataset(torch.utils.data.Dataset):
         self.plant_species = df['plant_species']
         self.locus_id = df['locus_id']
         self.receptor = df['receptor']
+        self.header_name = df['Header_Name'] if 'Header_Name' in df else df.index.astype(str)
         self.name = "PeptideSeqWithReceptorDataset"
         self.y = df['y'] if 'y' in df else None
 
@@ -771,7 +776,8 @@ class PeptideSeqWithReceptorDataset(torch.utils.data.Dataset):
             'receptor_x': self.receptor_x.iloc[idx],
             'plant_species': self.plant_species.iloc[idx],
             'locus_id': self.locus_id.iloc[idx],
-            'receptor': self.receptor.iloc[idx]
+            'receptor': self.receptor.iloc[idx],
+            'Header_Name': self.header_name.iloc[idx]
         }
         if self.y is not None:
             item['y'] = self.y.iloc[idx]
