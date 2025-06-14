@@ -1,18 +1,13 @@
 # Load required packages
-if (!requireNamespace("tidyverse", quietly = TRUE)) {install.packages("tidyverse")} library(tidyverse)
-if (!requireNamespace("Peptides", quietly = TRUE)) {install.packages("Peptides")} library(Peptides)
+if (!requireNamespace("tidyverse", quietly = TRUE)) {install.packages("tidyverse")} 
+library(tidyverse)
+if (!requireNamespace("Peptides", quietly = TRUE)) {install.packages("Peptides")} 
+library(Peptides)
 
-args <- commandArgs(trailingOnly = TRUE)
-if (length(args) == 0) {
-  stop("   Example: Rscript 06_scripts_ml/05_chemical_conversion.R bulkiness test.csv\n",
-       "   Available features: bulkiness, charge, hydrophobicity, all")
-}
-
-# --- Define Available Features ---
-selected_features <- args
 
 # Read the training data
-data <- read.csv(paste("test_data_set/", args[2], sep = ""))
+args <- commandArgs(trailingOnly = TRUE)
+data <- read.csv(paste("intermediate_files/", args[1], sep = ""))
 data <- data[c("Header_Name", "plant_species", "receptor", "locus_id", "Sequence", "receptor_sequence")]
 
 # Function to convert sequence to bulkiness values
@@ -49,21 +44,21 @@ sequence_to_hydrophobicity <- function(sequence) {
 
 # Convert both Sequence and Receptor.Sequence to bulkiness values
 data$Sequence_Bulkiness <- sapply(data$Sequence, sequence_to_bulkiness)
-data$Receptor_Bulkiness <- sapply(data$Receptor.Sequence, sequence_to_bulkiness)
+data$Receptor_Bulkiness <- sapply(data$receptor_sequence, sequence_to_bulkiness)
 
 # Convert both Sequence and Receptor.Sequence to charge values
 data$Sequence_Charge <- sapply(data$Sequence, sequence_to_charge)
-data$Receptor_Charge <- sapply(data$Receptor.Sequence, sequence_to_charge)
+data$Receptor_Charge <- sapply(data$receptor_sequence, sequence_to_charge)
 
 # Convert both Sequence and Receptor.Sequence to hydrophobicity values
 data$Sequence_Hydrophobicity <- sapply(data$Sequence, sequence_to_hydrophobicity)
-data$Receptor_Hydrophobicity <- sapply(data$Receptor.Sequence, sequence_to_hydrophobicity)
+data$Receptor_Hydrophobicity <- sapply(data$receptor_sequence, sequence_to_hydrophobicity)
 
 # update colnames
-colnames_chemical_names <-  c("Header_Name","plant_species","receptor","locus_id", "Sequence",
-"receptor_sequence","Sequence_Bulkiness","Receptor_Bulkiness",
+colnames_chemical_names <-  c("Header_Name","plant_species","receptor","locus_id",
+"Sequence","receptor_sequence","Sequence_Bulkiness","Receptor_Bulkiness",
 "Sequence_Charge","Receptor_Charge","Sequence_Hydrophobicity","Receptor_Hydrophobicity")
 colnames(data) <- colnames_chemical_names
 
 # Save the processed data
-write.csv(data, paste0("test_data_set/data_validation_", args[1]), row.names = FALSE)
+write.csv(data, paste0("intermediate_files/ready_", args[1]), row.names = FALSE)

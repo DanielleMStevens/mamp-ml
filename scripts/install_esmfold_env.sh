@@ -3,12 +3,21 @@
 # Exit on error
 set -e
 
+CURRENTPATH=`pwd`
+ESMFOLDDIR="${CURRENTPATH}/esmfold-conda"
+
+mkdir -p "${ESMFOLDDIR}"
+cd "${ESMFOLDDIR}"
+
+source "${ESMFOLDDIR}/conda/etc/profile.d/conda.sh"
+export PATH="${ESMFOLDDIR}/conda/condabin:${PATH}"
+conda update -n base conda -y
 echo "Creating esmfold environment..."
-conda create -n esmfold python=3.9 -y
+conda create -p "$ESMFOLDDIR/esmfold-conda" python=3.9 -y
 
 echo "Activating esmfold environment..."
 eval "$(conda shell.bash hook)"
-conda activate esmfold
+conda activate "$ESMFOLDDIR/esmfold-conda"
 
 echo "Installing PyTorch and related packages..."
 conda install -y -c pytorch-nightly -c conda-forge -c bioconda \
@@ -36,6 +45,8 @@ conda run -n esmfold pip install biopython==1.79 \
     pytorch_lightning==2.0.9 \
     transformers \
     git+https://github.com/NVIDIA/dllogger.git
+
+"$COLABFOLDDIR/colabfold-conda/bin/pip" install silence_tensorflow
 
 echo "Installation complete! You can now activate the environment with:"
 echo "conda activate esmfold" 
