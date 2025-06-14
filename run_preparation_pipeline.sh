@@ -81,5 +81,5 @@ python LRR_Annotation/extract_lrr_sequences.py
 
 echo "Preparing data for prediction..."
 run_script "04_data_prep_for_prediction.py" "$INPUT_FILE"
-run_script "05_chemical_conversion.R" "test_data.csv
+run_script "05_chemical_conversion.R" "test_data.csv"
 echo "Data preparation completed successfully!" 
