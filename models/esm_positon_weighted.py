@@ -496,8 +496,8 @@ class ESMBfactorWeightedFeatures(nn.Module):
             raise ValueError("EOS token is None in collate_fn. Check tokenizer configuration.")
 
         # Extract sequences
-        sequences = [str(item['Sequence']) for item in batch]  # Ligand sequences
-        receptors = [str(item['receptor_sequence']) for item in batch]  # Receptor sequences
+        sequences = [str(item['peptide_x']) for item in batch]  # Ligand sequences
+        receptors = [str(item['receptor_x']) for item in batch]  # Receptor sequences
         
         # Create receptor IDs for B-factor weight lookup using the format: "plant_species|locus_id|receptor"
         receptor_ids = [
@@ -522,7 +522,12 @@ class ESMBfactorWeightedFeatures(nn.Module):
             """Helper function to process chemical features for either peptide or receptor."""
             features = {}
             for feat in ['bulkiness', 'charge', 'hydrophobicity']:
-                key = f"{prefix}_{feat}"
+                # Map to the actual column names from the R script
+                if prefix == 'sequence':
+                    key = f"Sequence_{feat.capitalize()}"  # e.g., "Sequence_Bulkiness"
+                else:  # receptor
+                    key = f"Receptor_{feat.capitalize()}"  # e.g., "Receptor_Bulkiness"
+                    
                 # Get tokenized sequence length to match feature dimensions
                 feature_length = encoded['input_ids'].size(1)
                 feature_list = []
@@ -659,4 +664,25 @@ class ESMBfactorWeightedFeatures(nn.Module):
         return {
             'predictions_saved': True,
             'num_predictions': len(results_df)
+        }
+
+class PeptideSeqWithReceptorDataset(torch.utils.data.Dataset):
+    def __init__(self, df):
+        self.peptide_x = df['Sequence']
+        self.receptor_x = df['receptor_sequence']
+        self.plant_species = df['plant_species']
+        self.locus_id = df['locus_id']
+        self.receptor = df['receptor']
+        self.name = "PeptideSeqWithReceptorDataset"
+
+    def __len__(self):
+        return len(self.peptide_x)
+
+    def __getitem__(self, idx):
+        return {
+            'peptide_x': self.peptide_x[idx],
+            'receptor_x': self.receptor_x[idx],
+            'plant_species': self.plant_species[idx],
+            'locus_id': self.locus_id[idx],
+            'receptor': self.receptor[idx]
         }
