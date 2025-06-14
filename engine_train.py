@@ -271,14 +271,14 @@ def evaluate(model, dl, device, args, output_dir):
         )
         # The model's get_stats function is called with only predictions
         model_with_losses = model.module if hasattr(model, "module") else model
-        stats = model_with_losses.get_stats(prob_all, train=False)
+        stats = model_with_losses.get_stats(prob_all, gt=None, train=False, sequences=lists["x"])
         return stats
     
     gt_all = torch.cat(lists["gt"])
     mean_loss = float(np.mean(lists['loss'])) if lists['loss'] else 0.0
 
     model_with_losses = model.module if hasattr(model, "module") else model
-    stats = model_with_losses.get_stats(gt_all, prob_all, train=False)  # Testing-specific metrics
+    stats = model_with_losses.get_stats(prob_all, gt=gt_all, train=False, sequences=lists["x"])  # Fix argument order and pass sequences
 
     # Create plots directory
     plots_dir = Path(output_dir) / 'plots'

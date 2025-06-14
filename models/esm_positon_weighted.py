@@ -639,17 +639,18 @@ class ESMBfactorWeightedFeatures(nn.Module):
         """
         return torch.softmax(logits, dim=-1)
 
-    def get_stats(self, pr, gt=None, train=False):
+    def get_stats(self, pr, gt=None, train=False, sequences=None):
         """
-        Calculate and save prediction probabilities with all input data.
+        Calculate evaluation metrics and save predictions.
         
         Args:
             pr: Predicted probabilities
             gt: Ground truth labels (optional)
-            train: Whether these are training or test metrics (not used in prediction mode)
+            train: Whether these are training or test metrics
+            sequences: List of decoded sequences (optional)
             
         Returns:
-            dict: Dictionary containing prediction results
+            dict: Dictionary containing evaluation metrics
         """
         # Get predicted class labels
         pred_labels = pr.argmax(dim=-1)
@@ -664,22 +665,82 @@ class ESMBfactorWeightedFeatures(nn.Module):
         if gt is not None:
             results_df['ground_truth'] = gt.cpu().numpy()
         
-        # Add all input data to the results
-        results_df['Header_Name'] = self.header_names if hasattr(self, 'header_names') else None
-        results_df['plant_species'] = self.plant_species if hasattr(self, 'plant_species') else None
-        results_df['receptor'] = self.receptors if hasattr(self, 'receptors') else None
-        results_df['locus_id'] = self.locus_ids if hasattr(self, 'locus_ids') else None
-        results_df['Sequence'] = self.epitope_seqs
-        results_df['receptor_sequence'] = self.receptor_seqs
+        # Handle sequences if provided (from evaluate function)
+        if sequences is not None and len(sequences) == len(results_df):
+            # Split sequences back into peptide and receptor parts
+            peptide_seqs = []
+            receptor_seqs = []
+            for seq_pair in sequences:
+                if isinstance(seq_pair, list) and len(seq_pair) >= 2:
+                    peptide_seqs.append(seq_pair[0].strip())
+                    receptor_seqs.append(seq_pair[1].strip())
+                else:
+                    peptide_seqs.append("")
+                    receptor_seqs.append("")
+            
+            results_df['Sequence'] = peptide_seqs
+            results_df['receptor_sequence'] = receptor_seqs
+        else:
+            # Use instance variables as fallback (only works for single batch)
+            if hasattr(self, 'epitope_seqs') and len(self.epitope_seqs) == len(results_df):
+                results_df['Sequence'] = self.epitope_seqs
+                results_df['receptor_sequence'] = self.receptor_seqs
+            else:
+                # Add empty columns if no sequence data is available
+                results_df['Sequence'] = [""] * len(results_df)
+                results_df['receptor_sequence'] = [""] * len(results_df)
+        
+        # Add other metadata columns with empty values
+        results_df['Header_Name'] = ""
+        results_df['plant_species'] = ""
+        results_df['receptor'] = ""
+        results_df['locus_id'] = ""
         
         # Save predictions to CSV
         results_df.to_csv('predictions.csv', index=False)
         
-        # Return minimal stats for compatibility
-        return {
-            'predictions_saved': True,
-            'num_predictions': len(results_df)
-        }
+        # Calculate proper evaluation metrics if ground truth is available
+        if gt is not None:
+            from sklearn.metrics import accuracy_score, f1_score, roc_auc_score, average_precision_score
+            
+            y_true = gt.cpu().numpy()
+            y_pred = pred_labels.cpu().numpy()
+            y_prob = probs
+            
+            # Calculate metrics
+            metrics = {}
+            prefix = "train_" if train else "test_"
+            
+            # Basic classification metrics
+            metrics[f"{prefix}acc"] = accuracy_score(y_true, y_pred)
+            metrics[f"{prefix}f1_macro"] = f1_score(y_true, y_pred, average='macro')
+            metrics[f"{prefix}f1_weighted"] = f1_score(y_true, y_pred, average='weighted')
+            
+            # Multi-class ROC AUC
+            try:
+                metrics[f"{prefix}auroc"] = roc_auc_score(y_true, y_prob, multi_class='ovr', average='macro')
+            except:
+                metrics[f"{prefix}auroc"] = 0.0
+                
+            # Per-class AUPRC
+            from sklearn.preprocessing import label_binarize
+            y_true_bin = label_binarize(y_true, classes=[0, 1, 2])
+            for i in range(3):
+                try:
+                    metrics[f"{prefix}auprc_class{i}"] = average_precision_score(y_true_bin[:, i], y_prob[:, i])
+                except:
+                    metrics[f"{prefix}auprc_class{i}"] = 0.0
+            
+            # Add loss if available
+            metrics[f"{prefix}loss"] = 0.0  # Placeholder
+            
+            return metrics
+        else:
+            # No ground truth available
+            return {
+                'predictions_saved': True,
+                'num_predictions': len(results_df)
+            }
 
 class PeptideSeqWithReceptorDataset(torch.utils.data.Dataset):
     def __init__(self, df):
