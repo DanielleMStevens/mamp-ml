@@ -9,8 +9,8 @@ ESMFOLDDIR="${CURRENTPATH}/esmfold-conda"
 mkdir -p "${ESMFOLDDIR}"
 cd "${ESMFOLDDIR}"
 
-source "${ESMFOLDDIR}/conda/etc/profile.d/conda.sh"
-export PATH="${ESMFOLDDIR}/conda/condabin:${PATH}"
+#source "${ESMFOLDDIR}/conda/etc/profile.d/conda.sh"
+#export PATH="${ESMFOLDDIR}/conda/condabin:${PATH}"
 conda update -n base conda -y
 echo "Creating esmfold environment..."
 conda create -p "$ESMFOLDDIR/esmfold-conda" python=3.9 -y
@@ -46,7 +46,7 @@ conda run -n esmfold pip install biopython==1.79 \
     transformers \
     git+https://github.com/NVIDIA/dllogger.git
 
-"$COLABFOLDDIR/colabfold-conda/bin/pip" install silence_tensorflow
+#"$COLABFOLDDIR/colabfold-conda/bin/pip" install silence_tensorflow
 
 echo "Installation complete! You can now activate the environment with:"
 echo "conda activate esmfold" 
