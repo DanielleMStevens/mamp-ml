@@ -78,5 +78,5 @@ run_script "03_parse_lrr_annotation.py"
 
 echo "Preparing data for prediction..."
 run_script "04_data_prep_for_prediction.py" "$INPUT_FILE"
-run_script "05_chemical_conversion.R"
+run_script "05_chemical_conversion.R" "test_data.csv
 echo "Data preparation completed successfully!" 

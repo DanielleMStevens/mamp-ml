@@ -321,8 +321,8 @@ def main(args):
         
     # Initialize dataset class
     dataset = dataset_dict[args.model]
-    if issubclass(dataset, AlphaFoldDataset):
-        dataset = partial(dataset, name_to_x=torch.load(args.name_to_x))
+    # if issubclass(dataset, AlphaFoldDataset):
+    #     dataset = partial(dataset, name_to_x=torch.load(args.name_to_x))
         
     # Print model statistics
     n_params = sum(p.numel() for p in model.parameters())
