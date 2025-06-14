@@ -474,10 +474,19 @@ class ESMBfactorWeightedFeatures(nn.Module):
         3. Processes chemical features to match tokenized sequence length
         
         Args:
-            batch: List of individual data samples
-            
+            batch: List of individual data samples with format:
+                - Header_Name: Unique identifier
+                - plant_species: Plant species name
+                - receptor: Receptor name
+                - locus_id: Locus identifier
+                - Sequence: Ligand/peptide sequence
+                - receptor_sequence: Receptor sequence
+                - Chemical features for both ligand and receptor:
+                    - sequence_bulkiness, sequence_charge, sequence_hydrophobicity
+                    - receptor_bulkiness, receptor_charge, receptor_hydrophobicity
+                
         Returns:
-            dict: Batch dictionary with processed inputs and labels
+            dict: Batch dictionary with processed inputs
         """
         # Use the model's tokenizer
         tokenizer = self.tokenizer 
@@ -486,15 +495,17 @@ class ESMBfactorWeightedFeatures(nn.Module):
         if separator_token is None:
             raise ValueError("EOS token is None in collate_fn. Check tokenizer configuration.")
 
-        # Extract sequences and labels
-        sequences = [str(item['peptide_x']) for item in batch]  # Peptide sequences
-        receptors = [str(item['receptor_x']) for item in batch]  # Receptor sequences
-        labels = torch.tensor([item['y'] for item in batch])  # Ground truth labels
+        # Extract sequences
+        sequences = [str(item['Sequence']) for item in batch]  # Ligand sequences
+        receptors = [str(item['receptor_sequence']) for item in batch]  # Receptor sequences
         
-        # Get receptor IDs for B-factor weight lookup
-        receptor_ids = [str(item.get('receptor_id', '')) for item in batch]
+        # Create receptor IDs for B-factor weight lookup using the format: "plant_species|locus_id|receptor"
+        receptor_ids = [
+            f"{item['plant_species']}|{item['locus_id']}|{item['receptor']}" 
+            for item in batch
+        ]
         
-        # Combine peptide and receptor sequences with separator token between them
+        # Combine ligand and receptor sequences with separator token
         combined = [f"{seq} {separator_token} {rec}" for seq, rec in zip(sequences, receptors)]
         
         # Tokenize with padding and truncation
@@ -518,30 +529,32 @@ class ESMBfactorWeightedFeatures(nn.Module):
                 
                 for item in batch:
                     if key in item:
-                         # Ensure the feature tensor matches tokenized sequence length
-                         item_feature = torch.tensor(item[key])
-                         
-                         # Pad or truncate features to match tokenized length
-                         if len(item_feature) < feature_length:
-                              # Pad with zeros if feature is shorter
-                              padding = torch.zeros(feature_length - len(item_feature))
-                              item_feature = torch.cat([item_feature, padding])
-                         elif len(item_feature) > feature_length:
-                              # Truncate if feature is longer
-                              item_feature = item_feature[:feature_length]
-                              
-                         feature_list.append(item_feature)
+                        # Convert feature string to tensor if it's a comma-separated string
+                        if isinstance(item[key], str):
+                            feature_values = [float(x) for x in item[key].split(',')]
+                            item_feature = torch.tensor(feature_values)
+                        else:
+                            item_feature = torch.tensor(item[key])
+                            
+                        # Pad or truncate to match tokenized length
+                        if len(item_feature) < feature_length:
+                            padding = torch.zeros(feature_length - len(item_feature))
+                            item_feature = torch.cat([item_feature, padding])
+                        elif len(item_feature) > feature_length:
+                            item_feature = item_feature[:feature_length]
+                        feature_list.append(item_feature)
                     else:
-                         # If feature not found, use zeros
-                         feature_list.append(torch.zeros(feature_length))
-                         
-                # Stack features into tensor [batch_size, seq_len]
+                        feature_list.append(torch.zeros(feature_length))
                 features[feat] = torch.stack(feature_list)
             return features
         
         # Process features for both peptide and receptor
         seq_features = process_features(batch, 'sequence')  # Peptide features
         rec_features = process_features(batch, 'receptor')  # Receptor features
+        
+        # Store sequences for output
+        self.receptor_seqs = receptors
+        self.epitope_seqs = sequences
         
         # Return formatted batch dictionary
         return {
@@ -555,8 +568,7 @@ class ESMBfactorWeightedFeatures(nn.Module):
                 'rec_charge': rec_features['charge'],  # Receptor charge
                 'rec_hydrophobicity': rec_features['hydrophobicity'],  # Receptor hydrophobicity
                 'receptor_id': receptor_ids,  # Receptor identifiers for B-factor lookup
-            },
-            'y': labels  # Ground truth class labels
+            }
         }
 
     def get_tokenizer(self):
@@ -611,77 +623,40 @@ class ESMBfactorWeightedFeatures(nn.Module):
         """
         return torch.softmax(logits, dim=-1)
 
-    def get_stats(self, gt, pr, train=False):
+    def get_stats(self, pr, train=False):
         """
-        Calculate evaluation metrics and include predicted probabilities.
+        Calculate and save prediction probabilities with all input data.
         
         Args:
-            gt: Ground truth labels
             pr: Predicted probabilities
-            train: Whether these are training or test metrics
+            train: Whether these are training or test metrics (not used in prediction mode)
             
         Returns:
-            dict: Dictionary of evaluation metrics including probabilities
+            dict: Dictionary containing prediction results
         """
-        # Set prefix for metric names
-        prefix = "train" if train else "test"
-        
         # Get predicted class labels
         pred_labels = pr.argmax(dim=-1)
         
-        # Calculate standard classification metrics
-        stats = {
-            f"{prefix}_acc": accuracy_score(gt.cpu(), pred_labels.cpu()),  # Accuracy
-            f"{prefix}_f1_macro": f1_score(gt.cpu(), pred_labels.cpu(), average='macro'),  # Macro F1
-            f"{prefix}_f1_weighted": f1_score(gt.cpu(), pred_labels.cpu(), average='weighted')  # Weighted F1
-        }
+        # Convert predictions to numpy arrays
+        probs = pr.cpu().numpy()
         
-        try:
-            # Calculate area under ROC curve (multi-class)
-            stats[f"{prefix}_auroc"] = roc_auc_score(gt.cpu(), pr.cpu(), multi_class='ovr')
-            
-            # Convert ground truth to one-hot encoding for per-class metrics
-            gt_onehot = np.eye(3)[gt.cpu()]  # One-hot encoding for 3 classes
-            pr_np = pr.cpu().numpy()  # Convert predictions to numpy
-            
-            # Calculate precision-recall AUC for each class
-            for i in range(3):
-                precision, recall, _ = precision_recall_curve(gt_onehot[:, i], pr_np[:, i])
-                stats[f"{prefix}_auprc_class{i}"] = auc(recall, precision)
-            
-            # Calculate macro-average precision-recall AUC
-            stats[f"{prefix}_auprc_macro"] = np.mean([stats[f"{prefix}_auprc_class{i}"] for i in range(3)])
-            
-        except:
-            # Handle errors (e.g., if only one class is present)
-            stats[f"{prefix}_auroc"] = 0.0
-            stats[f"{prefix}_auprc_macro"] = 0.0
-            for i in range(3):
-                stats[f"{prefix}_auprc_class{i}"] = 0.0
-
-        # Save test probabilities to CSV if this is test data and final epoch
-        #if not train and hasattr(self, 'current_epoch') and self.current_epoch == self.hparams.epochs - 1:
-        if not train:
-            # Convert predictions and ground truth to numpy arrays
-            probs = pr.cpu().numpy()
-            labels = gt.cpu().numpy()
-            
-            # Create DataFrame with probabilities and true labels
-            # Create DataFrame with probabilities, labels and sequences
-            results_df = pd.DataFrame(probs, columns=['prob_class0', 'prob_class1', 'prob_class2'])
-            if labels is not None:
-                results_df['true_label'] = labels
-            results_df['predicted_label'] = pred_labels.cpu().numpy()
-            
-            # Add receptor and epitope sequences
-            if hasattr(self, 'receptor_seqs') and hasattr(self, 'epitope_seqs'):
-                results_df['receptor_sequence'] = self.receptor_seqs
-                results_df['epitope_sequence'] = self.epitope_seqs
-                
-            # Save to CSV
-            results_df.to_csv('test_predictions.csv', index=False)
-            
-        # Keep probabilities in stats dictionary for consistency
-        #stats[f"{prefix}_probabilities"] = pr.cpu().numpy()
-            
-        return stats
+        # Create DataFrame with probabilities and predicted labels
+        results_df = pd.DataFrame(probs, columns=['prob_class0', 'prob_class1', 'prob_class2'])
+        results_df['predicted_label'] = pred_labels.cpu().numpy()
+        
+        # Add all input data to the results
+        results_df['Header_Name'] = self.header_names if hasattr(self, 'header_names') else None
+        results_df['plant_species'] = self.plant_species if hasattr(self, 'plant_species') else None
+        results_df['receptor'] = self.receptors if hasattr(self, 'receptors') else None
+        results_df['locus_id'] = self.locus_ids if hasattr(self, 'locus_ids') else None
+        results_df['Sequence'] = self.epitope_seqs
+        results_df['receptor_sequence'] = self.receptor_seqs
+        
+        # Save predictions to CSV
+        results_df.to_csv('predictions.csv', index=False)
+        
+        # Return minimal stats for compatibility
+        return {
+            'predictions_saved': True,
+            'num_predictions': len(results_df)
+        }

@@ -37,7 +37,12 @@ To install the software needed before model prediction, AlphaFold2 via colabfold
 bash install_software.sh
 ```
 
-Once your excel file with receptor and ligands sequences is prepared (see example_data.xlsx to see format), run the following command to run the pipeline.
+Please prepare an excel file in the following format (see example_data.xlsx as an example):
+```
+plant_species | locus_id | receptor | ligand_sequence | receptor_sequence
+```
+
+Once your excel file with receptor and ligands sequences is prepared, run the following command to run the pipeline.
 ```
 bash run_prediction_pipeline.sh input_data.xlsx
 ```
@@ -47,7 +52,7 @@ bash run_prediction_pipeline.sh input_data.xlsx
 To run this package locally, we recommend having compute with a NIVDIA GPU available and at least 16 GB RAM and 16 GB VRAM. The main step that is slow + memory intensive is running AlphaFold. While we were able to run predictions on a 1080Ti, we found considerable runtime improvements using RTX A5000 cards. 
 
 
-If you use this tool, please cite the following paper:
+__If you use this tool, please cite the following paper:__ </br>
 Stevens et al. 2025. Mamp-ml: a deep learning approach to epitope immunogenicity in plants. BioRxiv. 
 DOI:
 
