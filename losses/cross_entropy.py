@@ -28,6 +28,8 @@ class CrossEntropyLoss(nn.Module):
         # device = (torch.device('cuda')
         #           if features.is_cuda
         #           else torch.device('cpu'))
+        if 'y' not in batch:
+            return {}
         labels = batch['y']
         if isinstance(output, dict):
             logits = output['logits']

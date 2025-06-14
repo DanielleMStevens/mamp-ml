@@ -105,11 +105,15 @@ class BFactorWeightGenerator:
             min_weight (float): Minimum weight to assign (default: 0.5)
             max_weight (float): Maximum weight to assign (default: 2.0)
         """
+        # Store weight range parameters
+        self.min_weight = min_weight  # Minimum weight for normalization
+        self.max_weight = max_weight  # Maximum weight for normalization
+        
         # Make the path parameter optional with a default fallback
         if bfactor_csv_path is None:
             # Try different common paths
             possible_paths = [
-                "04_Preprocessing_results/bfactor_winding_lrr_segments.csv"
+                "intermediate_files/bfactor_winding_lrr_segments.csv"
             ]
             for path in possible_paths:
                 if os.path.exists(path):
@@ -561,20 +565,27 @@ class ESMBfactorWeightedFeatures(nn.Module):
         self.receptor_seqs = receptors
         self.epitope_seqs = sequences
         
-        # Return formatted batch dictionary
-        return {
+        # Prepare the output dictionary
+        batch_output = {
             'x': {
-                'combined_tokens': encoded['input_ids'],  # Tokenized sequences
-                'combined_mask': encoded['attention_mask'],  # Attention mask
-                'seq_bulkiness': seq_features['bulkiness'],  # Peptide bulkiness
-                'seq_charge': seq_features['charge'],  # Peptide charge
-                'seq_hydrophobicity': seq_features['hydrophobicity'],  # Peptide hydrophobicity
-                'rec_bulkiness': rec_features['bulkiness'],  # Receptor bulkiness
-                'rec_charge': rec_features['charge'],  # Receptor charge
-                'rec_hydrophobicity': rec_features['hydrophobicity'],  # Receptor hydrophobicity
-                'receptor_id': receptor_ids,  # Receptor identifiers for B-factor lookup
+                'combined_tokens': encoded['input_ids'],
+                'combined_mask': encoded['attention_mask'],
+                'seq_bulkiness': seq_features['bulkiness'],
+                'seq_charge': seq_features['charge'],
+                'seq_hydrophobicity': seq_features['hydrophobicity'],
+                'rec_bulkiness': rec_features['bulkiness'],
+                'rec_charge': rec_features['charge'],
+                'rec_hydrophobicity': rec_features['hydrophobicity'],
+                'receptor_id': receptor_ids,
             }
         }
+
+        # Include labels if they exist in the batch (for training/evaluation)
+        if 'y' in batch[0]:
+            labels = [item['y'] for item in batch]
+            batch_output['y'] = torch.tensor(labels, dtype=torch.long)
+
+        return batch_output
 
     def get_tokenizer(self):
         """
@@ -628,12 +639,13 @@ class ESMBfactorWeightedFeatures(nn.Module):
         """
         return torch.softmax(logits, dim=-1)
 
-    def get_stats(self, pr, train=False):
+    def get_stats(self, pr, gt=None, train=False):
         """
         Calculate and save prediction probabilities with all input data.
         
         Args:
             pr: Predicted probabilities
+            gt: Ground truth labels (optional)
             train: Whether these are training or test metrics (not used in prediction mode)
             
         Returns:
@@ -648,6 +660,9 @@ class ESMBfactorWeightedFeatures(nn.Module):
         # Create DataFrame with probabilities and predicted labels
         results_df = pd.DataFrame(probs, columns=['prob_class0', 'prob_class1', 'prob_class2'])
         results_df['predicted_label'] = pred_labels.cpu().numpy()
+
+        if gt is not None:
+            results_df['ground_truth'] = gt.cpu().numpy()
         
         # Add all input data to the results
         results_df['Header_Name'] = self.header_names if hasattr(self, 'header_names') else None
@@ -674,15 +689,19 @@ class PeptideSeqWithReceptorDataset(torch.utils.data.Dataset):
         self.locus_id = df['locus_id']
         self.receptor = df['receptor']
         self.name = "PeptideSeqWithReceptorDataset"
+        self.y = df['y'] if 'y' in df else None
 
     def __len__(self):
         return len(self.peptide_x)
 
     def __getitem__(self, idx):
-        return {
-            'peptide_x': self.peptide_x[idx],
-            'receptor_x': self.receptor_x[idx],
-            'plant_species': self.plant_species[idx],
-            'locus_id': self.locus_id[idx],
-            'receptor': self.receptor[idx]
+        item = {
+            'peptide_x': self.peptide_x.iloc[idx],
+            'receptor_x': self.receptor_x.iloc[idx],
+            'plant_species': self.plant_species.iloc[idx],
+            'locus_id': self.locus_id.iloc[idx],
+            'receptor': self.receptor.iloc[idx]
         }
+        if self.y is not None:
+            item['y'] = self.y.iloc[idx]
+        return item

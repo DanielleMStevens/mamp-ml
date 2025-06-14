@@ -239,32 +239,46 @@ def evaluate(model, dl, device, args, output_dir):
             all_losses.update(losses)
             
         # Store individual losses
-        for loss_name, loss_val in all_losses.items():
-            if loss_name not in lists.keys():
-                lists[loss_name] = []
-            lists[loss_name].append(loss_val.cpu())
+        if all_losses:
+            for loss_name, loss_val in all_losses.items():
+                if loss_name not in lists.keys():
+                    lists[loss_name] = []
+                lists[loss_name].append(loss_val.cpu())
             
         # Get predictions
         preds = model_with_losses.get_pr(output)
-        lists["gt"].append(batch['y'].cpu())
+        if 'y' in batch:
+            lists["gt"].append(batch['y'].cpu())
         lists["pr"].append(preds.cpu())
         lists["x"].extend(model_with_losses.batch_decode(batch))
 
-        total_loss = sum(all_losses.values())
-        lists['loss'].append(total_loss.cpu())
+        if all_losses:
+            total_loss = sum(all_losses.values())
+            lists['loss'].append(total_loss.cpu())
 
     # Process all predictions and calculate metrics
-    gt_all = torch.cat(lists["gt"])
     prob_all = torch.cat(lists["pr"])
-    mean_loss = float(np.mean(lists['loss']))
+
+    # If no ground truth, just save predictions and exit
+    if not lists["gt"]:
+        print("No ground truth labels found. Saving predictions only.")
+        torch.save(
+            {
+                "pr": prob_all,
+                "x": lists["x"]
+            },
+            output_dir / "test_preds.pth",
+        )
+        # The model's get_stats function is called with only predictions
+        model_with_losses = model.module if hasattr(model, "module") else model
+        stats = model_with_losses.get_stats(prob_all, train=False)
+        return stats
+    
+    gt_all = torch.cat(lists["gt"])
+    mean_loss = float(np.mean(lists['loss'])) if lists['loss'] else 0.0
 
     model_with_losses = model.module if hasattr(model, "module") else model
     stats = model_with_losses.get_stats(gt_all, prob_all, train=False)  # Testing-specific metrics
-
-    # Calculate average losses
-    for loss_name, loss_val in all_losses.items():
-        stats[f'test_{loss_name}'] = float(np.mean(lists[loss_name]))
-    stats['test_loss'] = mean_loss
 
     # Create plots directory
     plots_dir = Path(output_dir) / 'plots'
