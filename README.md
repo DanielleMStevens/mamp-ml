@@ -4,7 +4,7 @@
 
 
 
-This repository contains the code for mamp-ml, a deep learning approach to epitope immunogenicity in plants. If you plan to run on a small number of receptor-epitope combinations (less than 10 receptors), we recommend you use co-lab. If you plan to run on 100-1000s of receptor-epitope combinations, we recommend you install locally, have access to a GPU (at least A5000) and potenitally adjust the code to pull MSAs for receptor structure generation locally (future enhancement). To do so, please see info from localcolab: [link here](https://github.com/YoshitakaMo/localcolabfold).
+This repository contains the code for mamp-ml, a deep learning approach to epitope immunogenicity in plants. If you plan to run on a small number of receptor-epitope combinations (less than 10 receptors), we recommend you use Google Colab. If you plan to run on 100-1000s of receptor-epitope combinations, we recommend you install locally, have access to a GPU (at least A5000) and potenitally adjust the code to pull MSAs for receptor structure generation locally (future enhancement). To do so, please see info from localcolab: [link here](https://github.com/YoshitakaMo/localcolabfold).
 
 ## Authors
 * __Danielle M. Stevens__ <a itemprop="sameAs" content="https://orcid.org/0000-0001-5630-137X" href="https://orcid.org/0000-0001-5630-137X" target="orcid.widget" rel="me noopener noreferrer" style="vertical-align:top;"><img src="https://orcid.org/sites/default/files/images/orcid_16x16.png" style="width:1em;margin-right:.5em;" alt="ORCID iD icon"></a>   </br>
@@ -46,10 +46,33 @@ Please prepare an excel file in the following format (see example_data.xlsx as a
 plant_species | locus_id | receptor | ligand_sequence | receptor_sequence
 ```
 
-Once your excel file with receptor and ligands sequences is prepared, run the following command to run the pipeline.
+Once your excel file with receptor and ligands sequences is prepared, follow the below pipeline:
 ```
+# this will transform your excel sheet into a fasta file
+bash mamp-ml/prepare_input_data.sh input_data.xlsx
+
+# activate AlphaFold and run (please update your path
+conda activate localfold
+export PATH="/global/scratch/users/dmstev/localcolabfold/colabfold-conda/bin:$PATH" 
+colabfold_batch --num-models 1 ./mamp-ml/intermediate_files/receptor_full_length.fasta \
+   ./mamp-ml/intermediate_files/receptor_only/
+
+# once AlphaFold models are complete, run to process the model structures via LRR-Annotation
+# and prep data for prediction via mamp-ml
 bash run_prediction_pipeline.sh input_data.xlsx
+
+# deactivate conda environment to activate another
+conda deactivate localfold
+conda activate esmfold
+python mamp-ml/main_train.py \
+    --model esm2_bfactor_weighted \
+    --eval_only_data_path /content/mamp-ml/intermediate_files/ready_test_data.csv \
+    --model_checkpoint_path /content/mamp-ml/mamp_ml_weights.pth \
+    --device cpu \
+    --disable_wandb
 ```
+
+A sucessful run will prodice a csv file with processed input data (plant species, receptor, locus_id, ligand and receptor sequence) as well as prediction and their associated softmax probabilities. 
 
 ## Computational requirements:
 
