@@ -43,7 +43,7 @@ bash install_software.sh
 
 Please prepare an excel file in the following format (see example_data.xlsx as an example):
 ```
-plant_species | locus_id | receptor | ligand_sequence | receptor_sequence
+plant_species | receptor | locus_id | receptor_sequence | ligand_sequence
 ```
 
 Once your excel file with receptor and ligands sequences is prepared, follow the below pipeline:
