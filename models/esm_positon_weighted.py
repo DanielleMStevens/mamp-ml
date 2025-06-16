@@ -1,3 +1,19 @@
+#-----------------------------------------------------------------------------------------------
+# Krasileva Lab - Plant & Microbial Biology Department UC Berkeley
+# Author: MAMP-ML Project Team
+# Last Updated: 2024
+# Script Purpose: ESM2-based peptide-receptor interaction prediction with B-factor weighting
+# Inputs: 
+#   - Peptide and receptor protein sequences
+#   - Chemical features (bulkiness, charge, hydrophobicity)
+#   - B-factor structural data for position weighting
+#   - Training labels (interaction classes: 0, 1, 2)
+# Outputs: 
+#   - Trained model for peptide-receptor interaction prediction
+#   - Prediction probabilities for each interaction class
+#   - Evaluation metrics and CSV files with predictions
+#-----------------------------------------------------------------------------------------------
+
 import torch
 import torch.nn as nn
 from transformers import AutoTokenizer, AutoModel
@@ -7,6 +23,10 @@ import pandas as pd
 import torch.nn.functional as F
 import os
 
+######################################################################
+# FiLM (Feature-wise Linear Modulation) Layer for Chemical Conditioning
+######################################################################
+
 class FiLMWithConcatenation(nn.Module):
     """
     FiLM layer that conditions sequence representation with chemical features.
@@ -15,8 +35,20 @@ class FiLMWithConcatenation(nn.Module):
     that modulates neural network activations using learned parameters generated
     from conditioning information. Here, we use this technique to condition protein
     sequence embeddings with chemical property features.
+    
+    This implementation:
+    - Processes 3D chemical features (bulkiness, charge, hydrophobicity)
+    - Projects them to the same dimension as sequence embeddings
+    - Generates conditioning parameters (gamma and beta) via FiLM
+    - Applies element-wise modulation to sequence representations
     """
     def __init__(self, feature_dim):
+        """
+        Initialize the FiLM conditioning layer.
+        
+        Args:
+            feature_dim (int): Dimension of the sequence embeddings to be conditioned
+        """
         super().__init__()
         # Process chemical features with a small MLP network
         # The network projects 3D chemical features (bulkiness, charge, hydrophobicity)
@@ -36,6 +68,14 @@ class FiLMWithConcatenation(nn.Module):
 
     def forward(self, x, z, chemical_features=None):
         """
+        Apply FiLM conditioning to sequence embeddings using chemical features.
+        
+        The conditioning process:
+        1. Normalize sequence embeddings
+        2. Process chemical features through MLP
+        3. Generate FiLM parameters (gamma, beta)
+        4. Apply modulation: gamma * x + beta
+        
         Args:
             x: Sequence embeddings (batch_size, seq_len, feature_dim)
                These are the embeddings from the ESM protein language model
@@ -86,6 +126,10 @@ class FiLMWithConcatenation(nn.Module):
         # Apply dropout for regularization
         return self.dropout(output)
 
+######################################################################
+# B-Factor Weight Generator for Structural Position Weighting
+######################################################################
+
 class BFactorWeightGenerator:
     """
     Generates weights based on B-factors from preprocessed data.
@@ -95,6 +139,12 @@ class BFactorWeightGenerator:
     B-factor values indicate the numerical position along this coil. This allows
     us to weight different regions of the LRR based on their relative position
     in the repeating structural motif.
+    
+    Key functionality:
+    - Loads B-factor data from CSV files
+    - Maps protein identifiers to structural weights
+    - Normalizes weights to specified range
+    - Handles missing data gracefully with default weights
     """
     def __init__(self, bfactor_csv_path=None, min_weight=0.5, max_weight=2):
         """
@@ -139,6 +189,9 @@ class BFactorWeightGenerator:
     def _load_bfactor_data(self, csv_path):
         """
         Load and process B-factor data from CSV.
+        
+        This method handles the conversion between different protein identifier formats
+        to ensure compatibility with the training data.
         
         Args:
             csv_path (str): Path to CSV file with B-factor data
@@ -229,6 +282,10 @@ class BFactorWeightGenerator:
         
         return weights
 
+######################################################################
+# Main ESM Model with B-Factor Weighting and Chemical Feature Integration
+######################################################################
+
 class ESMBfactorWeightedFeatures(nn.Module):
     """
     ESM model with B-factor weighted features for peptide-receptor interaction prediction.
@@ -238,14 +295,23 @@ class ESMBfactorWeightedFeatures(nn.Module):
     2. Chemical feature integration via FiLM conditioning
     3. Targeted fine-tuning by freezing early layers
     
-    The model is designed for peptide-receptor interaction prediction with 3 output classes.
+    The model is designed for peptide-receptor interaction prediction with 3 output classes:
+    - Class 0: No interaction
+    - Class 1: Weak interaction  
+    - Class 2: Strong interaction
+    
+    Architecture overview:
+    - ESM2 backbone for sequence embeddings
+    - B-factor weight generator for structural emphasis
+    - FiLM layer for chemical feature conditioning
+    - Classification head for final predictions
     """
     def __init__(self, args, num_classes=3):
         """
         Initialize the ESM model with B-factor weighted features.
         
         Args:
-            args: Configuration arguments
+            args: Configuration arguments containing model hyperparameters
             num_classes (int): Number of output classes (default: 3)
         """
         super().__init__()
@@ -322,7 +388,7 @@ class ESMBfactorWeightedFeatures(nn.Module):
 
     def save_hyperparameters(self, args):
         """
-        Save model hyperparameters.
+        Save model hyperparameters for reproducibility and checkpointing.
         
         Args:
             args: Configuration arguments to save
@@ -332,6 +398,13 @@ class ESMBfactorWeightedFeatures(nn.Module):
     def forward(self, batch_x):
         """
         Forward pass applying B-factor weighting to both embeddings and chemical features.
+        
+        This method implements the core functionality:
+        1. ESM embedding generation for combined peptide-receptor sequences
+        2. B-factor weight calculation and application
+        3. Chemical feature processing and weighting
+        4. FiLM conditioning for feature integration
+        5. Final classification
         
         Args:
             batch_x: Input batch with tokenized sequences and chemical features
@@ -447,8 +520,8 @@ class ESMBfactorWeightedFeatures(nn.Module):
         Training step with L2 regularization to prevent overfitting.
         
         Args:
-            batch: Batch of training data
-            batch_idx: Index of the current batch
+            batch: Batch of training data containing inputs and labels
+            batch_idx: Index of the current batch (for logging purposes)
             
         Returns:
             torch.Tensor: Loss value for this batch
@@ -468,21 +541,25 @@ class ESMBfactorWeightedFeatures(nn.Module):
         loss = self.criterion(logits, labels) + l2_lambda * l2_reg
         return loss
 
+    ######################################################################
+    # Data Processing and Tokenization Functions
+    ######################################################################
+
     def collate_fn(self, batch):
         """
         Collate function for batching data during training and evaluation.
         
-        This function:
+        This function handles the complex data preprocessing pipeline:
         1. Combines peptide and receptor sequences with a separator
-        2. Tokenizes the combined sequences
+        2. Tokenizes the combined sequences using ESM tokenizer
         3. Processes chemical features to match tokenized sequence length
-        4. Stores metadata for later use in get_stats
+        4. Stores metadata for later use in evaluation and prediction saving
         
         Args:
-            batch: List of individual data samples
+            batch: List of individual data samples from the dataset
                 
         Returns:
-            dict: Batch dictionary with processed inputs
+            dict: Batch dictionary with processed inputs ready for model forward pass
         """
         # Use the model's tokenizer
         tokenizer = self.tokenizer 
@@ -523,7 +600,12 @@ class ESMBfactorWeightedFeatures(nn.Module):
         
         # Process chemical features to match tokenized sequence length
         def process_features(batch, prefix):
-            """Helper function to process chemical features for either peptide or receptor."""
+            """
+            Helper function to process chemical features for either peptide or receptor.
+            
+            This function handles the conversion of chemical feature data from the input
+            format to tensors that match the tokenized sequence length.
+            """
             features = {}
             for feat in ['bulkiness', 'charge', 'hydrophobicity']:
                 # Map to the actual column names from the R script
@@ -583,18 +665,22 @@ class ESMBfactorWeightedFeatures(nn.Module):
 
         return batch_output
 
+    ######################################################################
+    # Model Utility Functions
+    ######################################################################
+
     def get_tokenizer(self):
         """
-        Get the model's tokenizer.
+        Get the model's tokenizer for external use.
         
         Returns:
-            Tokenizer: The ESM tokenizer
+            Tokenizer: The ESM tokenizer used by this model
         """
         return self.tokenizer
 
     def batch_decode(self, batch):
         """
-        Decode tokenized sequences back to text.
+        Decode tokenized sequences back to text for analysis and debugging.
         
         Args:
             batch: Batch containing tokenized sequences
@@ -625,29 +711,37 @@ class ESMBfactorWeightedFeatures(nn.Module):
 
     def get_pr(self, logits):
         """
-        Convert logits to class probabilities.
+        Convert logits to class probabilities using softmax.
         
         Args:
-            logits: Raw output logits from the model
+            logits: Raw output logits from the model classifier
             
         Returns:
-            torch.Tensor: Softmax probabilities
+            torch.Tensor: Softmax probabilities for each class
         """
         return torch.softmax(logits, dim=-1)
+
+    ######################################################################
+    # Evaluation and Prediction Analysis Functions
+    ######################################################################
 
     def get_stats(self, pr, gt=None, train=False, sequences=None, metadata=None):
         """
         Calculate evaluation metrics and save predictions with original metadata.
         
+        This function computes comprehensive evaluation metrics and saves detailed
+        predictions to CSV files for further analysis. It handles both training
+        evaluation (with ground truth) and inference (prediction only).
+        
         Args:
-            pr: Predicted probabilities
-            gt: Ground truth labels (optional)
+            pr: Predicted probabilities from the model
+            gt: Ground truth labels (optional, for evaluation)
             train: Whether these are training or test metrics
-            sequences: List of decoded sequences (optional)
+            sequences: List of decoded sequences (optional, for debugging)
             metadata: Dictionary containing all metadata from all batches
             
         Returns:
-            dict: Dictionary containing evaluation metrics
+            dict: Dictionary containing evaluation metrics and prediction info
         """
         # Get predicted class labels
         pred_labels = pr.argmax(dim=-1)
@@ -756,8 +850,36 @@ class ESMBfactorWeightedFeatures(nn.Module):
                 'num_predictions': len(results_df)
             }
 
+######################################################################
+# Dataset Class for Peptide-Receptor Interaction Data
+######################################################################
+
 class PeptideSeqWithReceptorDataset(torch.utils.data.Dataset):
+    """
+    Dataset class for handling peptide-receptor interaction data.
+    
+    This dataset handles:
+    - Peptide and receptor protein sequences
+    - Associated metadata (species, locus, receptor type)
+    - Interaction labels (if available for training/evaluation)
+    
+    The dataset is designed to work with the collate_fn method of the model
+    to properly format data for training and inference.
+    """
     def __init__(self, df):
+        """
+        Initialize the dataset from a pandas DataFrame.
+        
+        Args:
+            df: DataFrame containing columns:
+                - Sequence: peptide sequences
+                - receptor_sequence: receptor sequences  
+                - plant_species: species information
+                - locus_id: locus identifiers
+                - receptor: receptor type/name
+                - Header_Name: sequence identifiers (optional)
+                - y: interaction labels (optional, for training)
+        """
         self.peptide_x = df['Sequence']
         self.receptor_x = df['receptor_sequence']
         self.plant_species = df['plant_species']
@@ -768,9 +890,19 @@ class PeptideSeqWithReceptorDataset(torch.utils.data.Dataset):
         self.y = df['y'] if 'y' in df else None
 
     def __len__(self):
+        """Return the number of samples in the dataset."""
         return len(self.peptide_x)
 
     def __getitem__(self, idx):
+        """
+        Get a single sample from the dataset.
+        
+        Args:
+            idx: Index of the sample to retrieve
+            
+        Returns:
+            dict: Dictionary containing sample data and metadata
+        """
         item = {
             'peptide_x': self.peptide_x.iloc[idx],
             'receptor_x': self.receptor_x.iloc[idx],

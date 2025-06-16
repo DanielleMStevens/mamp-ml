@@ -51,7 +51,7 @@ Once your excel file with receptor and ligands sequences is prepared, follow the
 # this will transform your excel sheet into a fasta file
 bash mamp-ml/prepare_input_data.sh input_data.xlsx
 
-# activate AlphaFold and run (please update your path
+# activate AlphaFold and run (please update your path)
 conda activate localfold
 export PATH="/global/scratch/users/dmstev/localcolabfold/colabfold-conda/bin:$PATH" 
 colabfold_batch --num-models 1 ./mamp-ml/intermediate_files/receptor_full_length.fasta \
