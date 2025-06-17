@@ -72,7 +72,7 @@ python mamp-ml/main_train.py \
     --disable_wandb
 ```
 
-A sucessful run will prodice a csv file with processed input data (plant species, receptor, locus_id, ligand and receptor sequence) as well as prediction and their associated softmax probabilities. 
+A sucessful run will produce a csv file with processed input data (plant species, receptor, locus_id, ligand and receptor sequence) as well as prediction and their associated softmax probabilities. 
 
 ## Computational requirements:
 
