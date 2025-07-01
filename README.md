@@ -95,6 +95,9 @@ Have data to contribute?
 ----
 We are always looking to improve mamp-ml to improve prediction accuracy and expand to other LRR-PRR receptors and their protein ligands. Please feel free to contact us if you have recently published a dataset or would like to contribute to make this tool better!
 
+__If you are in industry or want to use mamp-ml for commercial purposes, please contact us: __
+Danielle M. Stevens, dmstev@berkeley.edu 
+Ksenia Krasileva, kseniak@berkeley.edu
 
 Contact 
 ----
