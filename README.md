@@ -3,7 +3,6 @@
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1RSMHMNVxAQiz-V5PAfHaKG9V-CkKYurH?usp=sharing)
 
 
-
 This repository contains the code for mamp-ml, a deep learning approach to epitope immunogenicity in plants. If you plan to run on a small number of receptor-epitope combinations (less than 10 receptors), we recommend you use Google Colab. If you plan to run on 100-1000s of receptor-epitope combinations, we recommend you install locally, have access to a GPU (at least A5000) and potenitally adjust the code to pull MSAs for receptor structure generation locally (future enhancement). To do so, please see info from localcolab: [link here](https://github.com/YoshitakaMo/localcolabfold).
 
 ## Authors
@@ -95,8 +94,8 @@ Have data to contribute?
 ----
 We are always looking to improve mamp-ml to improve prediction accuracy and expand to other LRR-PRR receptors and their protein ligands. Please feel free to contact us if you have recently published a dataset or would like to contribute to make this tool better!
 
-__If you are in industry or want to use mamp-ml for commercial purposes, please contact us: __
-Danielle M. Stevens, dmstev@berkeley.edu 
+__If you are in industry or want to use mamp-ml for commercial purposes, please contact us:__ </br>
+Danielle M. Stevens, dmstev@berkeley.edu </br>
 Ksenia Krasileva, kseniak@berkeley.edu
 
 Contact 
