@@ -88,6 +88,8 @@ Have data to contribute?
 ----
 We are always looking to improve mamp-ml to improve prediction accuracy and expand to other LRR-PRR receptors and their protein ligands. Please feel free to contact us if you have recently published a dataset or would like to contribute to make this tool better!
 
+> The development of mamp-ml would not have been possible without the data availability of two decades of work across many labs and countries. This work represents the potential growth of the field when data is shared freely and made readily accessible. It is critical moving forward that future research makes all raw data and sequential information readably available in accessible data storage entities such as NCBI, Zenodo, GitHub, among many others. Together, though, as the code of LRR receptors is better understood, we foresee using these building blocks to generate de novo receptors, enabling targeted plant engineering against pathogens and long-term sustainability.</br>
+
 __If you are in industry or want to use mamp-ml for commercial purposes, please contact us:__ </br>
 Danielle M. Stevens, dmstev@berkeley.edu </br>
 Ksenia Krasileva, kseniak@berkeley.edu
