@@ -79,7 +79,7 @@ To run this package locally, we recommend having compute with a NIVDIA GPU avail
 
 __If you use this tool, please cite the following paper:__ </br>
 Stevens et al. 2025. Mamp-ml: a deep learning approach to epitope immunogenicity in plants. _BioRxiv._ </br> 
-DOI:
+DOI: 10.1101/2025.07.11.664399
 
 Details on building this pipeline and model can be found in another GitHub Repo: [mamp-prediction-ml](https://github.com/DanielleMStevens/mamp_prediction_ml).
 
