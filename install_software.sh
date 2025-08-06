@@ -1,7 +1,5 @@
 # install conda packages
-conda create --name=localfold python=3.11
-conda activate localfold
-
+conda install -n base python=3.11 -y
 conda install mamba
 mamba update --all
 mamba install cuda -c nvidia
