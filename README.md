@@ -47,7 +47,7 @@ source ~/.bashrc
 
 To install the software dependencies, AlphaFold2 via colabfold and LRR-Annotation, we will run the following command:
 ```
-bash install_software.sh
+bash mamp-ml/install_software.sh
 ```
 
 Please prepare an excel file in the following format (see example_data.xlsx as an example):
