@@ -35,6 +35,16 @@ _Center for Computational Biology, University of California, Berkeley_
 
 ## General installation and running instructions:
 
+Download the GitHub repo:
+```
+git clone https://github.com/DanielleMStevens/mamp-ml.git
+```
+
+Then, conda will be required to install the package dependencies. If you are unsure how to download and install conda, please visit the following markdown file [link](https://github.com/DanielleMStevens/ROS_production_review/blob/master/process_files.md). If conda fails to initalize, you can also run the command below:
+```
+source ~/.bashrc
+```
+
 To install the software needed before model prediction, AlphaFold2 via colabfold and LRR-Annotation, we will run the following command:
 ```
 bash install_software.sh
