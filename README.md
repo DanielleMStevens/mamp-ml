@@ -39,13 +39,12 @@ Download the GitHub repo:
 ```
 git clone https://github.com/DanielleMStevens/mamp-ml.git
 ```
-
-Then, conda will be required to install the package dependencies. If you are unsure how to download and install conda, please visit the following markdown file [link](https://github.com/DanielleMStevens/ROS_production_review/blob/master/process_files.md). If conda fails to initalize, you can also run the command below:
+Install and initialize conda. If you need instructions for how to install conda, please see [the wiki page](https://github.com/DanielleMStevens/mamp-ml/wiki). If conda fails to initalize, you can also run the command below:
 ```
 source ~/.bashrc
 ```
 
-To install the software needed before model prediction, AlphaFold2 via colabfold and LRR-Annotation, we will run the following command:
+To install the software dependencies, AlphaFold2 via colabfold and LRR-Annotation, we will run the following command:
 ```
 bash install_software.sh
 ```
@@ -82,6 +81,9 @@ python mamp-ml/main_train.py \
 ```
 
 A sucessful run will produce a csv file with processed input data (plant species, receptor, locus_id, ligand and receptor sequence) as well as prediction and their associated softmax probabilities. 
+
+
+**Note:** If you are an HPC user, you made need to modify your installation. Please visit [our wiki page](https://github.com/DanielleMStevens/mamp-ml/wiki) for a guide.
 
 ## Computational requirements:
 
