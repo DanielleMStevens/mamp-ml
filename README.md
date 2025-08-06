@@ -41,6 +41,7 @@ git clone https://github.com/DanielleMStevens/mamp-ml.git
 ```
 Install and initialize conda. If you need instructions for how to install conda, please see [the wiki page](https://github.com/DanielleMStevens/mamp-ml/wiki). If conda fails to initialize, you can also run the command below:
 ```
+conda init
 source ~/.bashrc
 ```
 
