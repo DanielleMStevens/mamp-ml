@@ -66,7 +66,7 @@ Once your excel file with receptor and ligands sequences is prepared, follow the
 bash mamp-ml/prepare_input_data.sh "$(pwd)/data_of_interest.xlsx"
 
 # activate AlphaFold and run (please update your path)
-conda activate localfold
+conda activate /content/localcolabfold/colabfold-conda
 export PATH="/global/scratch/users/dmstev/localcolabfold/colabfold-conda/bin:$PATH" 
 colabfold_batch --num-models 1 ./mamp-ml/intermediate_files/receptor_full_length.fasta \
    ./mamp-ml/intermediate_files/receptor_only/
@@ -75,9 +75,9 @@ colabfold_batch --num-models 1 ./mamp-ml/intermediate_files/receptor_full_length
 # and prep data for prediction via mamp-ml
 bash run_prediction_pipeline.sh input_data.xlsx
 
-# deactivate conda environment to activate another
-conda deactivate localfold
-conda activate esmfold
+# deactivate conda environment to activate another (please update your path)
+conda deactivate /content/localcolabfold/colabfold-conda
+conda activate /content/esmfold-conda/esmfold-conda
 python mamp-ml/main_train.py \
     --model esm2_bfactor_weighted \
     --eval_only_data_path /content/mamp-ml/intermediate_files/ready_test_data.csv \
