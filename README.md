@@ -73,7 +73,7 @@ colabfold_batch --num-models 1 ./mamp-ml/intermediate_files/receptor_full_length
 
 # once AlphaFold models are complete, run to process the model structures via LRR-Annotation
 # and prep data for prediction via mamp-ml
-bash run_prediction_pipeline.sh input_data.xlsx
+bash mamp-ml/run_preparation_pipeline.sh "$(pwd)/data_of_interest.xlsx"
 
 # deactivate conda environment to activate another (please update your path)
 conda deactivate /content/localcolabfold/colabfold-conda
