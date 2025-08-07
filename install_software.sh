@@ -10,6 +10,7 @@ bash install_colabbatch_linux.sh
 pip install matplotlib-inline
 conda install -c conda-forge wxpython -y
 pip install scikit-learn
+pip install openpyxl
 conda deactivate
 
 bash /content/mamp-ml/scripts/install_esmfold_env.sh
