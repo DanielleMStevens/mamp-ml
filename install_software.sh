@@ -1,4 +1,4 @@
-# install conda packages
+# install conda packages + localcolabfold
 conda install -n base python=3.11 -y
 conda install mamba
 mamba update --all
@@ -13,7 +13,13 @@ pip install scikit-learn
 pip install openpyxl
 conda deactivate
 
+# install packages need for esm-2
 bash /content/mamp-ml/scripts/install_esmfold_env.sh
+pip install torchvision
+pip install transformers
+pip install wandb
+pip install scikit-learn
+pip install matplotlib
 
 # --------- old code based from during development ------------
 #conda create --name=localfold python=3.11 -y
