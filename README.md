@@ -76,7 +76,7 @@ colabfold_batch --num-models 1 ./mamp-ml/intermediate_files/receptor_full_length
 bash mamp-ml/run_preparation_pipeline.sh "$(pwd)/data_of_interest.xlsx"
 
 # deactivate conda environment to activate another (please update your path)
-conda deactivate /content/localcolabfold/colabfold-conda
+conda deactivate
 conda activate /content/esmfold-conda/esmfold-conda
 python mamp-ml/main_train.py \
     --model esm2_bfactor_weighted \
