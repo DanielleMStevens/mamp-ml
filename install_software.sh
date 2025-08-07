@@ -6,8 +6,10 @@ mamba install cuda -c nvidia
 wget https://raw.githubusercontent.com/YoshitakaMo/localcolabfold/main/install_colabbatch_linux.sh
 bash install_colabbatch_linux.sh
 
+# install some packages for LRR-Annotation
 pip install matplotlib-inline
 conda install -c conda-forge wxpython -y
+pip install scikit-learn
 conda deactivate
 
 bash /content/mamp-ml/scripts/install_esmfold_env.sh
