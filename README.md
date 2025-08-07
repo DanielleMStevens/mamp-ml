@@ -48,6 +48,11 @@ source ~/.bashrc
 To install the software dependencies, AlphaFold2 via colabfold and LRR-Annotation, we will run the following command:
 ```
 bash mamp-ml/install_software.sh
+
+# you can check for proper install of colabfold by the following command (update the path to
+# activate the conda package):
+conda activate /content/localcolabfold/colabfold-conda
+colabfold_batch --help    
 ```
 
 Please prepare an excel file in the following format (see example_data.xlsx as an example):
@@ -58,7 +63,7 @@ plant_species | receptor | locus_id | receptor_sequence | ligand_sequence
 Once your excel file with receptor and ligands sequences is prepared, follow the below pipeline:
 ```
 # this will transform your excel sheet into a fasta file
-bash mamp-ml/prepare_input_data.sh input_data.xlsx
+bash mamp-ml/prepare_input_data.sh "$(pwd)/data_of_interest.xlsx"
 
 # activate AlphaFold and run (please update your path)
 conda activate localfold
