@@ -5,7 +5,7 @@
 [![DOI:10.1101/2025.07.11.664399](http://img.shields.io/badge/DOI-10.1101/2025.07.11.664399-B31B1B.svg)](https://doi.org/10.1101/2025.07.11.664399)
 
 
-This repository contains the code for mamp-ml, a deep learning approach to epitope immunogenicity in plants. If you plan to run on a small number of receptor-epitope combinations (less than 100 receptors), we recommend you use Google Colab. If you plan to run on 10000s+ of receptor-epitope combinations, we recommend you install locally, have access to a GPU (at least A5000) and potentially adjust the code to pull MSAs for receptor structure generation locally (future enhancement). To do so, please see info from localcolab: [link here](https://github.com/YoshitakaMo/localcolabfold).
+This repository contains the code for mamp-ml, a deep learning approach to epitope immunogenicity in plants. If you plan to run on a small number of receptor-epitope combinations (less than 100 receptors), we recommend you use Google Colab. If you plan to run on 10000s+ of receptor-epitope combinations, we recommend you install locally, have access to a GPU (at least A100) and potentially adjust the code to pull MSAs for receptor structure generation locally (future enhancement). To do so, please see info from localcolab: [link here](https://github.com/YoshitakaMo/localcolabfold).
 
 ## Authors
 * __Danielle M. Stevens__ <a itemprop="sameAs" content="https://orcid.org/0000-0001-5630-137X" href="https://orcid.org/0000-0001-5630-137X" target="orcid.widget" rel="me noopener noreferrer" style="vertical-align:top;"><img src="https://orcid.org/sites/default/files/images/orcid_16x16.png" style="width:1em;margin-right:.5em;" alt="ORCID iD icon"></a>   </br>
