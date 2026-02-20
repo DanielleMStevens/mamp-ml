@@ -1,6 +1,6 @@
 # mamp-ml
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1RSMHMNVxAQiz-V5PAfHaKG9V-CkKYurH?usp=sharing)
+<!--[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1RSMHMNVxAQiz-V5PAfHaKG9V-CkKYurH?usp=sharing)-->
 [![Project Status: Active – The project has reached a stable, usable state and is being actively developed.](https://www.repostatus.org/badges/latest/active.svg)](https://www.repostatus.org/#active)
 [![DOI:10.1101/2025.07.11.664399](http://img.shields.io/badge/DOI-10.1101/2025.07.11.664399-B31B1B.svg)](https://doi.org/10.1101/2025.07.11.664399)
 
@@ -36,6 +36,8 @@ _Center for Computational Biology, University of California, Berkeley_
 >Eukaryotes detect biomolecules through surface-localized receptors, a central signaling response hub. A subset of receptors survey for pathogens, induce immunity, and restrict pathogen growth. Comparative genomics of both hosts and pathogens has unveiled vast sequence variation in receptors and potential ligands, creating an experimental bottleneck. We have developed mamp-ml, a machine learning framework for predicting plant receptor-ligand interactions. We leveraged existing functional data from over two decades of foundational research, together with the large protein language model ESM-2, to build a pipeline and model that predicts immunogenic outcomes using a combination of receptor-ligand features. Our model achieves 74% prediction accuracy on a held-out test set, even when an experimental structure is lacking. Our approach enables high-throughput screening of LRR receptor-ligand combinations and provides a computational framework for engineering plant immune systems.
 
 ## General installation and running instructions:
+
+*__Note:__* We are aware that colab is down and it is currently being fixed. Please use the local version for the time being. 
 
 Download the GitHub repo:
 ```
