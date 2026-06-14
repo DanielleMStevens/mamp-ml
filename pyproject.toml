@@ -1,0 +1,148 @@
+# ---------------------------------------------------------------------------
+# mamp-ml: deep-learning predictor for plant receptor-ligand (MAMP)
+# immunogenicity, using ESM-2 and structure-aware features.
+#
+# Packaging notes for maintainers
+# ---------------------------------
+# - This file is the single source of truth for installable dependencies.
+# - We target Python 3.9-3.12 to cover the broadest set of user environments
+#   (Colab Python 3.10/3.11, conda Python 3.9-3.12, ESMFold's 3.9 env).
+# - Dependency ranges are intentionally conservative to maximise the chance
+#   of a clean install on arbitrary user machines. Tightening is OK; loosening
+#   should be paired with end-to-end test confirmation.
+# - Heavy/optional deps (ESMFold, dev tools) are exposed as PEP 508 extras.
+# - Model weights (mamp_ml_weights.pth, ~33 MB) will be moved under
+#   src/mamp_ml/weights/ in a later checkpoint and shipped via package_data.
+# ---------------------------------------------------------------------------
+
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mamp-ml"
+version = "0.2.0"
+description = "Deep-learning predictor for plant receptor-ligand (MAMP) immunogenicity using ESM-2 and structure-aware features."
+readme = "README.md"
+license = { file = "LICENSE.txt" }
+requires-python = ">=3.9,<3.13"
+authors = [
+    { name = "Danielle M. Stevens", email = "dmstev@berkeley.edu" },
+    { name = "David Yang" },
+    { name = "Tatiana Liang" },
+    { name = "Tianrun Li" },
+    { name = "Brandon Vega" },
+    { name = "Gitta Coaker" },
+    { name = "Ksenia Krasileva" },
+]
+keywords = [
+    "bioinformatics",
+    "protein",
+    "machine-learning",
+    "plant-immunity",
+    "esm",
+    "esmfold",
+    "alphafold",
+    "ppi",
+    "leucine-rich-repeat",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+
+# Runtime dependencies needed by the core preprocessing + prediction pipeline.
+# Pins are upper-bounded where we know of breakage (e.g. numpy 2.0 ABI churn,
+# pandas 3 removals) and lower-bounded at the versions actually exercised in
+# the existing codebase.
+dependencies = [
+    # Data + I/O
+    "pandas>=1.5,<3",
+    "numpy>=1.23,<2",                # numpy 2.0 broke many scientific deps; revisit after validation
+    "openpyxl>=3.0",                 # xlsx engine for pandas.read_excel
+    # Numeric + scientific
+    "scipy>=1.10,<2",
+    "scikit-learn>=1.0,<2",
+    # Structural biology
+    "biopython>=1.79",
+    # Progress / UX
+    "tqdm>=4.60",
+    # Deep learning + ESM-2 prediction backbone
+    "torch>=2.0",
+    "transformers>=4.30",
+    "fair-esm>=2.0.0",
+]
+
+[project.optional-dependencies]
+# ESMFold structure-prediction backend (optional, opt-in via `--backend esmfold`).
+# Kept as an extra so that users who only want ColabFold structures need not pay
+# the install cost of accelerate.
+esmfold = [
+    "accelerate>=0.20",
+]
+
+# Development + test tooling.
+dev = [
+    "pytest>=7",
+    "pytest-cov",
+    "ruff",
+]
+
+[project.urls]
+Homepage = "https://github.com/DanielleMStevens/mamp-ml"
+Issues = "https://github.com/DanielleMStevens/mamp-ml/issues"
+Repository = "https://github.com/DanielleMStevens/mamp-ml"
+
+# ---------------------------------------------------------------------------
+# Note: no [project.scripts] entry yet. The `mamp-ml` CLI is added in a later
+# checkpoint, once the implementation in src/mamp_ml/cli.py is real.
+# ---------------------------------------------------------------------------
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# Bundled data files live alongside their Python module. Adding declarations
+# now so they take effect automatically the moment the matching files land
+# in a later checkpoint.
+[tool.setuptools.package-data]
+mamp_ml = [
+    "weights/*.pth",
+    "py.typed",
+]
+
+# ---------------------------------------------------------------------------
+# Tooling configuration
+# ---------------------------------------------------------------------------
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+# Keep the lint surface tight but pragmatic for a scientific codebase.
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = [
+    "E501",   # line length handled by formatter
+    "B008",   # function calls in defaults are common in scientific code
+]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra --strict-markers"
+testpaths = ["tests"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]

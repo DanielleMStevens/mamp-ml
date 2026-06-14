@@ -1,0 +1,40 @@
+# ---------------------------------------------------------------------------
+# Conda environment for mamp-ml.
+#
+# This file provides a single, reproducible Python environment that satisfies
+# every dependency declared in pyproject.toml. It does NOT install ColabFold
+# or AlphaFold2 — those are heavy, GPU-specific, and best handled by their
+# own dedicated installers (see install_colabbatch_linux.sh).
+#
+# Usage
+# -----
+#   conda env create -f environment.yml
+#   conda activate mamp-ml
+#
+# The final pip step installs mamp-ml in editable mode from the repository
+# root, so subsequent code changes are picked up without re-installing.
+# ---------------------------------------------------------------------------
+
+name: mamp-ml
+
+channels:
+  - conda-forge
+  - bioconda
+
+dependencies:
+  - python=3.10
+  - pip
+  # Pin platform-dependent / compiled deps via conda for reproducible installs
+  # across macOS (arm64, x86_64) and Linux. pip handles the pure-Python deps.
+  - pytorch>=2.0
+  - numpy>=1.23,<2
+  - scipy>=1.10,<2
+  - pandas>=1.5,<3
+  - openpyxl>=3.0
+  - biopython>=1.79
+  - tqdm>=4.60
+  - scikit-learn>=1.0,<2
+  - pip:
+      # Install the package itself (editable). The "[esmfold]" extra adds
+      # accelerate for the optional ESMFold backend.
+      - --editable .[esmfold]
