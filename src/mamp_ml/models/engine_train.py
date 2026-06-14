@@ -10,11 +10,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from losses.cross_entropy import CrossEntropyLoss
-from losses.supcon import SupConLoss
+from mamp_ml.losses.cross_entropy import CrossEntropyLoss
+from mamp_ml.losses.supcon import SupConLoss
 
 from transformers.tokenization_utils_base import BatchEncoding
-import misc
+from mamp_ml import misc
 import wandb
 from pathlib import Path
 from sklearn.metrics import (

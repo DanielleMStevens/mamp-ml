@@ -20,6 +20,13 @@ echo "Running data preparation pipeline with input file: $INPUT_FILE"
 # Change to the main project directory
 cd "$(dirname "$0")"
 
+# Make the mamp_ml package importable from the source tree without requiring
+# `pip install`. This is intentionally a *prepend* so a colocated installed copy
+# (e.g. in a conda env) would still take precedence over the source tree only if
+# the user explicitly puts it ahead — for a fresh clone the source tree wins,
+# which is what every downstream `python scripts/*.py` invocation expects.
+export PYTHONPATH="$PWD/src:${PYTHONPATH:-}"
+
 # Create logs directory if it doesn't exist
 mkdir -p logs
 
@@ -77,7 +84,7 @@ run_script "02_alphafold_to_lrr_annotation.py"
 run_script "03_parse_lrr_annotation.py"
 
 echo "Generating bandpass b-factor values..."
-python LRR_Annotation/analyze_bfactor_peaks.py
+python -m mamp_ml.lrr_annotation.analyze_bfactor_peaks
 
 echo "Preparing data for prediction..."
 run_script "04_data_prep_for_prediction.py" "$INPUT_FILE"

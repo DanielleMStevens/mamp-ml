@@ -11,14 +11,19 @@ from pathlib import Path
 import re
 import shutil
 import sys
-import os   
+import os
 
-project_root = Path(__file__).parent.parent
-lrr_annotation_path = project_root / "LRR_Annotation"
-sys.path.append(str(lrr_annotation_path))
+# Make `mamp_ml` importable without requiring `pip install` so that this script
+# remains runnable straight from a fresh checkout (used by both the legacy shell
+# wrapper and any direct invocation). Insertion is a no-op when the package has
+# already been installed into the active environment.
+project_root = Path(__file__).resolve().parent.parent
+_SRC_DIR = project_root / "src"
+if _SRC_DIR.exists() and str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
 
-from geom_lrr import Loader, Analyzer, Plotter
-from extract_lrr_sequences import LRRSequenceExtractor
+from mamp_ml.lrr_annotation import Loader, Analyzer, Plotter
+from mamp_ml.lrr_annotation.extract_lrr_sequences import LRRSequenceExtractor
 
 
 def parse_alphafold_log(log_file):

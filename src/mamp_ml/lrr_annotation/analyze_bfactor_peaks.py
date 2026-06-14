@@ -6,18 +6,19 @@ from tqdm import tqdm
 from pathlib import Path
 import pickle # Added for potential loading errors
 
-# Assuming geom_lrr is in the same parent directory or Python path
+# geom_lrr is a sibling subpackage of this module inside mamp_ml.lrr_annotation.
+# Use a fully-qualified package import so this works regardless of cwd / __main__ context.
 try:
-    from geom_lrr.loader import Loader
+    from mamp_ml.lrr_annotation.geom_lrr.loader import Loader
     # Import Analyzer and compute_winding function
     # Assuming Analyzer might have a method to compute breakpoints
-    from geom_lrr.analyzer import Analyzer, compute_winding
+    from mamp_ml.lrr_annotation.geom_lrr.analyzer import Analyzer, compute_winding
 except ImportError:
-    print("Error: Could not import Loader, Analyzer, or compute_winding from geom_lrr.")
-    print("Make sure 'geom_lrr' directory is accessible and contains analyzer.py with compute_winding.")
+    print("Error: Could not import Loader, Analyzer, or compute_winding from mamp_ml.lrr_annotation.geom_lrr.")
+    print("Make sure mamp_ml is installed (pip install -e .) or src/ is on PYTHONPATH.")
     exit() # Or handle the error appropriately
 except Exception as e:
-    print(f"Error during geom_lrr import: {e}") # Catch other potential import errors
+    print(f"Error during mamp_ml.lrr_annotation.geom_lrr import: {e}") # Catch other potential import errors
     exit()
 
 def analyze_lrr_bfactor_peaks(pdb_dir, period=25, filter_order=10, cache_dir=None):
@@ -244,7 +245,12 @@ def analyze_lrr_bfactor_peaks(pdb_dir, period=25, filter_order=10, cache_dir=Non
 
 if __name__ == "__main__":
     # --- Configuration ---
-    project_root = Path(__file__).parent.parent
+    # __file__ lives at <repo>/src/mamp_ml/lrr_annotation/analyze_bfactor_peaks.py;
+    # walk up four parents to reach the repo root (where intermediate_files/ is created
+    # by the preparation pipeline). The legacy layout used parents[1] because the
+    # script lived at <repo>/LRR_Annotation/; the relative-to-repo I/O semantics are
+    # preserved unchanged by this calculation.
+    project_root = Path(__file__).resolve().parents[3]
     PDB_DIRECTORY = project_root / "intermediate_files" / "pdb_for_lrr_annotator"
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
     CACHE_DIRECTORY = os.path.join(SCRIPT_DIR, "cache")

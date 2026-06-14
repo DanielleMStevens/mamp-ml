@@ -54,10 +54,10 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from models.esm_positon_weighted import BFactorWeightGenerator
-from models.esm_positon_weighted import ESMBfactorWeightedFeatures, PeptideSeqWithReceptorDataset
-from engine_train import train_one_epoch, evaluate
-import misc
+from mamp_ml.models.esm_positon_weighted import BFactorWeightGenerator
+from mamp_ml.models.esm_positon_weighted import ESMBfactorWeightedFeatures, PeptideSeqWithReceptorDataset
+from mamp_ml.engine_train import train_one_epoch, evaluate
+from mamp_ml import misc
 from sklearn.model_selection import StratifiedKFold
 
 

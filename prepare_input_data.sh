@@ -20,6 +20,10 @@ echo "Running data preparation pipeline with input file: $INPUT_FILE"
 # Change to the main project directory
 cd "$(dirname "$0")"
 
+# Make the mamp_ml package importable from the source tree without requiring
+# `pip install` (mirrors run_preparation_pipeline.sh for consistency).
+export PYTHONPATH="$PWD/src:${PYTHONPATH:-}"
+
 # Create logs directory if it doesn't exist
 mkdir -p logs
 

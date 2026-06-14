@@ -38,7 +38,7 @@ def test_example_xlsx_exists(example_xlsx: Path) -> None:
 
 def test_lrr_annotation_cache_present(repo_root: Path) -> None:
     """The pre-computed LRR-Annotation cache backs the post-fold golden tests."""
-    cache = repo_root / "LRR_Annotation" / "cache"
+    cache = repo_root / "src" / "mamp_ml" / "lrr_annotation" / "cache"
     expected = {
         "structures.pickle",
         "breakpoints.pickle",
