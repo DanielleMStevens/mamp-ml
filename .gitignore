@@ -1,0 +1,17 @@
+# ---------------------------------------------------------------------------
+# Generated test fixtures
+# ---------------------------------------------------------------------------
+# ColabFold structure-prediction outputs are produced by
+# tests/fixtures/build_colabfold_fixtures.sh from example_data.xlsx. They are
+# environment-dependent (require GPU/conda env), tens-of-MB per receptor, and
+# perfectly reproducible from the script. Generate locally, do not commit.
+tests/fixtures/colabfold_output/
+
+# ---------------------------------------------------------------------------
+# Pipeline scratch space
+# ---------------------------------------------------------------------------
+# Working directory created by run_preparation_pipeline.sh /
+# prepare_input_data.sh during a normal end-to-end run. Always derivable from
+# the input spreadsheet — never check in.
+intermediate_files/
+logs/
