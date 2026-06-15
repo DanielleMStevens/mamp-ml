@@ -177,6 +177,18 @@ def _build_parser() -> argparse.ArgumentParser:
             "colabfold structure tool."
         ),
     )
+    sp.add_argument(
+        "--chunk-size",
+        type=int,
+        default=None,
+        help=(
+            "ESMFold trunk chunk size (typical: 128 / 64 / 32). Splits the "
+            "folding trunk's triangular attention into chunks of that many "
+            "tokens, dramatically lowering peak VRAM at the cost of some "
+            "wall-clock. Required on GPUs with < ~20 GB VRAM at the 1024-AA "
+            "cap. Default: no chunking. Ignored for --structure colabfold."
+        ),
+    )
 
     # find-colabfold ---------------------------------------------------
     sp = sub.add_parser(
@@ -243,6 +255,16 @@ def _build_parser() -> argparse.ArgumentParser:
             "Truncate input sequences to this many residues (ESMFold has a "
             "1024-AA positional-embedding cap; the LRR ectodomain is "
             "N-terminal so the truncation preserves it)."
+        ),
+    )
+    sp.add_argument(
+        "--chunk-size",
+        type=int,
+        default=None,
+        help=(
+            "ESMFold trunk chunk size (typical: 128 / 64 / 32). Lowers peak "
+            "VRAM at the cost of some wall-clock. Required on GPUs with "
+            "< ~20 GB VRAM at the 1024-AA cap. Default: no chunking."
         ),
     )
 
@@ -320,6 +342,17 @@ def _build_parser() -> argparse.ArgumentParser:
             "Structure-prediction tool (default: colabfold). Set to "
             "`esmfold` to auto-run facebook/esmfold_v1 in-process instead "
             "of waiting for colabfold_batch outputs."
+        ),
+    )
+    sp.add_argument(
+        "--chunk-size",
+        type=int,
+        default=None,
+        help=(
+            "ESMFold trunk chunk size (typical: 128 / 64 / 32). Lowers peak "
+            "VRAM at the cost of some wall-clock. Required on GPUs with "
+            "< ~20 GB VRAM at the 1024-AA cap. Default: no chunking. "
+            "Ignored for --structure colabfold."
         ),
     )
     sp.add_argument(
@@ -516,7 +549,10 @@ def _run_prepare(args) -> int:
             from mamp_ml.fold.esmfold import fold_with_esmfold
 
             pdbs = fold_with_esmfold(
-                receptor_fasta, colabfold_dir, device=device
+                receptor_fasta,
+                colabfold_dir,
+                device=device,
+                chunk_size=getattr(args, "chunk_size", None),
             )
             print(f"   wrote {len(pdbs)} PDB(s) + log.txt to {colabfold_dir}")
         else:
@@ -857,7 +893,11 @@ def _run_fold(args) -> int:
         device = _resolve_torch_device(args.device)
         print(f"Folding {fasta} with ESMFold on device='{device}' ...")
         pdbs = fold_with_esmfold(
-            fasta, output_dir, device=device, max_length=args.max_length
+            fasta,
+            output_dir,
+            device=device,
+            max_length=args.max_length,
+            chunk_size=getattr(args, "chunk_size", None),
         )
         print(
             f"Wrote {len(pdbs)} PDB(s) + log.txt to {output_dir}/"

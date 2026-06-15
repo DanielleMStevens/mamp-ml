@@ -410,6 +410,132 @@ def test_predict_help_includes_end_to_end_example(repo_root: Path) -> None:
     assert "--keep all" in out
 
 
+def test_predict_subparser_accepts_chunk_size_flag(example_xlsx: Path) -> None:
+    """The predict, prepare, and fold subparsers must accept --chunk-size."""
+    from mamp_ml.__main__ import _build_parser
+
+    parser = _build_parser()
+    parsed = parser.parse_args(
+        ["predict", str(example_xlsx), "--chunk-size", "64"]
+    )
+    assert parsed.chunk_size == 64
+    parsed_default = parser.parse_args(["predict", str(example_xlsx)])
+    assert parsed_default.chunk_size is None
+
+
+def test_fold_with_esmfold_sets_chunk_size_when_provided(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """When chunk_size is passed, the helper must call model.trunk.set_chunk_size."""
+    from unittest.mock import MagicMock
+    import sys
+    import types
+    import mamp_ml.fold.esmfold as ef
+
+    # Minimal synthetic FASTA
+    fasta = tmp_path / "in.fasta"
+    fasta.write_text(">R\nACDEFGHIKLMNPQRSTVWY\n")
+
+    chunk_recorded: dict = {}
+
+    def fake_model_factory(model_id):
+        model = MagicMock()
+        model.esm = MagicMock()
+        model.esm.half.return_value = model.esm
+        model.to.return_value = model
+        model.eval.return_value = None
+        # trunk.set_chunk_size is the API we depend on
+        model.trunk = MagicMock()
+
+        def record_chunk(n):
+            chunk_recorded["size"] = n
+
+        model.trunk.set_chunk_size = record_chunk
+
+        def fake_call(**inputs):
+            import torch
+
+            n = inputs["input_ids"].shape[1]
+            plddt = torch.zeros((1, n, 37), dtype=torch.float32)
+            plddt[0, :, 1] = 80.0
+            out = MagicMock()
+            out.plddt = plddt
+            return out
+
+        model.side_effect = fake_call
+        model.output_to_pdb = lambda outputs: ["MODEL     1\nEND\n"]
+        return model
+
+    def fake_tokenizer_factory(model_id):
+        def tokenizer(seq, return_tensors="pt", add_special_tokens=False):
+            import torch
+            return {"input_ids": torch.zeros((1, len(seq)), dtype=torch.long)}
+        return tokenizer
+
+    monkeypatch.setattr(
+        ef,
+        "_import_esmfold",
+        lambda: (
+            type("T", (), {"from_pretrained": staticmethod(fake_tokenizer_factory)}),
+            type("M", (), {"from_pretrained": staticmethod(fake_model_factory)}),
+        ),
+    )
+
+    ef.fold_with_esmfold(fasta, tmp_path / "out", device="cpu", chunk_size=32)
+    assert chunk_recorded.get("size") == 32
+
+
+def test_fold_with_esmfold_catches_cuda_oom_with_actionable_message(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """When ESMFold's forward pass hits CUDA OOM, the re-raised error must
+    name `--chunk-size` so the user knows the fix."""
+    from unittest.mock import MagicMock
+    import mamp_ml.fold.esmfold as ef
+
+    fasta = tmp_path / "in.fasta"
+    fasta.write_text(">R\nACDEFGHIKLMNPQRSTVWY\n")
+
+    def fake_model_factory(model_id):
+        model = MagicMock()
+        model.esm = MagicMock()
+        model.esm.half.return_value = model.esm
+        model.to.return_value = model
+        model.eval.return_value = None
+        model.trunk = MagicMock()
+
+        def boom(**inputs):
+            import torch
+            raise torch.cuda.OutOfMemoryError("Tried to allocate 16 GiB")
+
+        model.side_effect = boom
+        model.output_to_pdb = lambda outputs: [""]
+        return model
+
+    def fake_tokenizer_factory(model_id):
+        def tokenizer(seq, return_tensors="pt", add_special_tokens=False):
+            import torch
+            return {"input_ids": torch.zeros((1, len(seq)), dtype=torch.long)}
+        return tokenizer
+
+    monkeypatch.setattr(
+        ef,
+        "_import_esmfold",
+        lambda: (
+            type("T", (), {"from_pretrained": staticmethod(fake_tokenizer_factory)}),
+            type("M", (), {"from_pretrained": staticmethod(fake_model_factory)}),
+        ),
+    )
+
+    import torch
+
+    with pytest.raises(torch.cuda.OutOfMemoryError) as exc_info:
+        ef.fold_with_esmfold(fasta, tmp_path / "out", device="cpu")
+    msg = str(exc_info.value)
+    assert "--chunk-size" in msg
+    assert "64" in msg  # the suggested value
+
+
 def test_predict_subparser_accepts_keep_flag(example_xlsx: Path) -> None:
     """The predict subcommand must accept --keep with choices {default, all}."""
     from mamp_ml.__main__ import _build_parser

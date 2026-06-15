@@ -208,6 +208,7 @@ def fold_with_esmfold(
     device: str = "cpu",
     max_length: int = ESMFOLD_MAX_LENGTH,
     model_id: str = "facebook/esmfold_v1",
+    chunk_size: "int | None" = None,
 ) -> List[Path]:
     """Fold every sequence in ``fasta_path`` and write ColabFold-style outputs.
 
@@ -239,6 +240,14 @@ def fold_with_esmfold(
         from the N-terminus. Defaults to ESMFold's positional-embedding cap.
     model_id
         HuggingFace model id; defaults to the canonical ``facebook/esmfold_v1``.
+    chunk_size
+        If set, applied via ``model.trunk.set_chunk_size(chunk_size)`` before
+        the forward pass. This splits the folding-trunk's triangular attention
+        into chunks of that many tokens, dramatically reducing peak VRAM at
+        the cost of some wall-clock. Typical values: 128 (modest savings),
+        64 (~half the peak), 32 (~quarter). Required for sequences near the
+        1024-AA cap on GPUs with < 24 GB VRAM. Default ``None`` means no
+        chunking (highest speed; requires ~20+ GB VRAM at full length).
 
     Returns
     -------
@@ -282,6 +291,21 @@ def fold_with_esmfold(
     model = model.to(device)
     model.eval()
 
+    # Trunk chunking dramatically reduces peak VRAM in the folding trunk's
+    # triangular-attention layers at the cost of some wall-clock. ESMFold
+    # exposes this via `model.trunk.set_chunk_size(N)` (no setter / no-op
+    # if N is None).
+    if chunk_size is not None:
+        try:
+            model.trunk.set_chunk_size(chunk_size)
+            print(f"  (ESMFold trunk chunk size: {chunk_size})")
+        except AttributeError:
+            warnings.warn(
+                "Installed transformers version does not expose "
+                "`model.trunk.set_chunk_size`; --chunk-size ignored.",
+                stacklevel=2,
+            )
+
     log_records: List[Tuple[str, int, int, float, float]] = []
     pdbs_written: List[Path] = []
 
@@ -300,8 +324,22 @@ def fold_with_esmfold(
         inputs = tokenizer(sequence, return_tensors="pt", add_special_tokens=False)
         inputs = {k: v.to(device) for k, v in inputs.items()}
 
-        with torch.no_grad():
-            outputs = model(**inputs)
+        try:
+            with torch.no_grad():
+                outputs = model(**inputs)
+        except torch.cuda.OutOfMemoryError as exc:
+            # The trunk's triangular attention scales quadratically with
+            # sequence length; a 1024-AA fold needs ~17 GB VRAM without
+            # chunking. Most cluster GPUs don't have that much free.
+            raise torch.cuda.OutOfMemoryError(
+                f"{receptor_name}: ESMFold ran out of GPU memory at "
+                f"length={padded_length}. ESMFold's full-precision trunk "
+                "needs ~17 GB VRAM at the 1024-AA cap. Pass "
+                "`--chunk-size 64` (or 32) on the CLI to split the trunk's "
+                "triangular attention into chunks; this dramatically lowers "
+                "peak VRAM at the cost of some wall-clock. "
+                f"Original message: {exc}"
+            ) from exc
 
         # `output_to_pdb` returns one PDB string per batch element; we feed one
         # sequence at a time, so we take element 0.
