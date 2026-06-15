@@ -102,10 +102,10 @@ Homepage = "https://github.com/DanielleMStevens/mamp-ml"
 Issues = "https://github.com/DanielleMStevens/mamp-ml/issues"
 Repository = "https://github.com/DanielleMStevens/mamp-ml"
 
-# ---------------------------------------------------------------------------
-# Note: no [project.scripts] entry yet. The `mamp-ml` CLI is added in a later
-# checkpoint, once the implementation in src/mamp_ml/cli.py is real.
-# ---------------------------------------------------------------------------
+[project.scripts]
+# `pip install mamp-ml` registers a `mamp-ml` console script that delegates to
+# the package dispatcher in src/mamp_ml/__main__.py — same as `python -m mamp_ml`.
+mamp-ml = "mamp_ml.__main__:main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }

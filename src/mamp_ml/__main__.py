@@ -130,6 +130,68 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Sheet name to read from the workbook (default: Sheet1)",
     )
 
+    # predict (one-shot top-level, end-to-end including model inference) ---
+    sp = sub.add_parser(
+        "predict",
+        help=(
+            "Run the full pipeline plus model inference "
+            "(xlsx -> predictions CSV)."
+        ),
+        description=(
+            "Runs `prepare` to produce ready_test_data.csv, then loads the "
+            "bundled MAMP-ml checkpoint and runs ESM-2 inference, writing "
+            "the predictions CSV the user actually wants. If ColabFold has "
+            "not been run yet the command prints the colabfold_batch "
+            "invocation and exits cleanly so the user can run ColabFold "
+            "and re-invoke this command."
+        ),
+    )
+    sp.add_argument("xlsx", help="Path to input .xlsx file")
+    sp.add_argument(
+        "--out-dir",
+        default="intermediate_files",
+        help="Directory for pipeline intermediates (default: intermediate_files).",
+    )
+    sp.add_argument(
+        "--colabfold-dir",
+        default=None,
+        help=(
+            "Directory containing colabfold log.txt + raw PDBs. "
+            "Defaults to <out_dir>/receptor_only."
+        ),
+    )
+    sp.add_argument(
+        "--structure-cache-dir",
+        default="LRR_Annotation/cache",
+        help="Directory for the structure-stage geometry pickles.",
+    )
+    sp.add_argument(
+        "--bfactor-cache-dir",
+        default=None,
+        help="Override for the bfactor-stage breakpoints cache directory.",
+    )
+    sp.add_argument(
+        "--checkpoint",
+        default=None,
+        help=(
+            "Path to the model checkpoint .pth file. Defaults to the "
+            "bundled mamp_ml_weights.pth shipped inside the package."
+        ),
+    )
+    sp.add_argument(
+        "--device",
+        default="cpu",
+        help=(
+            "Torch device to run inference on (default: cpu). "
+            "Pass 'cuda' on a GPU host for ~50-100x speedup."
+        ),
+    )
+    sp.add_argument(
+        "--sheet-name",
+        default="Sheet1",
+        help="Sheet name to read from the workbook (default: Sheet1)",
+    )
+
     # prepare-fasta -----------------------------------------------------
     sp = sub.add_parser(
         "prepare-fasta",
@@ -364,6 +426,91 @@ def _run_prepare(args) -> int:
     return 0
 
 
+def _run_predict(args) -> int:
+    """Implementation of ``python -m mamp_ml predict``.
+
+    Two-stage flow:
+
+    1. Delegate to :func:`_run_prepare` with the same data-pipeline args
+       so the user gets the standard prepare-time output (one ``[N/6]``
+       line per stage, ColabFold gating if needed). If prepare returns a
+       non-zero exit code we propagate it without attempting inference.
+    2. Hand off to :func:`mamp_ml.train.main` in eval-only mode, with the
+       resolved checkpoint path and device. ``mamp_ml.train.main`` reuses
+       the same architecture initialisation + model_dict the original
+       legacy trainer used, so the inference call surface is unchanged
+       (only its driver moved).
+
+    Returns
+    -------
+    int
+        Exit code: ``0`` on success, ``2`` if prepare hit the ColabFold
+        gate (FASTA was written; user was shown next steps), or whatever
+        ``mamp_ml.train.main`` returns (typically None, treated as 0).
+    """
+    from pathlib import Path
+
+    # The prepare args parser declares a superset of what we need here, but
+    # the same attribute names — so feed args directly into _run_prepare
+    # without rebuilding a namespace.
+    prepare_rc = _run_prepare(args)
+    if prepare_rc != 0:
+        return prepare_rc
+
+    from mamp_ml import train
+    from mamp_ml.weights import default_weights_path
+
+    out_dir = Path(args.out_dir)
+    ready_csv = out_dir / "ready_test_data.csv"
+    checkpoint = Path(args.checkpoint) if args.checkpoint else default_weights_path()
+    if not checkpoint.is_file():
+        print(
+            f"Error: model checkpoint not found at {checkpoint}. "
+            "Pass --checkpoint with an explicit path, or reinstall the "
+            "package to restore the bundled weights.",
+        )
+        return 3
+    if not ready_csv.is_file():
+        # Should not happen — prepare returns 0 only after producing this file.
+        print(f"Error: ready_test_data.csv missing at {ready_csv}.")
+        return 4
+
+    print()
+    print(f"Running ESM-2 inference on {ready_csv} (device: {args.device}) ...")
+
+    eval_argv = [
+        "--model", "esm2_bfactor_weighted",
+        "--eval_only_data_path", str(ready_csv.resolve()),
+        "--model_checkpoint_path", str(checkpoint.resolve()),
+        "--device", args.device,
+        "--disable_wandb",
+    ]
+    train_args = train.get_args_parser().parse_args(eval_argv)
+
+    # train.main() reads `args.output_dir` directly (the legacy __main__ block
+    # set it after parsing; main() does not). We mirror that here so eval mode
+    # has a place to write test_preds.pth.
+    train_args.output_dir = out_dir.resolve()
+
+    # The model's get_stats() writes 'predictions.csv' to the current working
+    # directory (hardcoded relative path inside esm_positon_weighted.py). We
+    # temporarily chdir into out_dir so the file lands alongside the other
+    # intermediate artefacts; chdir is restored on the way out so the caller
+    # sees no environmental change.
+    import os
+
+    prev_cwd = Path.cwd()
+    try:
+        os.chdir(out_dir)
+        train.main(train_args)
+    finally:
+        os.chdir(prev_cwd)
+
+    print()
+    print(f"Predictions written to {out_dir / 'predictions.csv'}")
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     """Entry point for ``python -m mamp_ml``.
 
@@ -375,6 +522,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.cmd == "prepare":
         return _run_prepare(args)
+
+    if args.cmd == "predict":
+        return _run_predict(args)
 
     if args.cmd == "prepare-fasta":
         from mamp_ml.preprocess import xlsx_to_receptor_fasta
