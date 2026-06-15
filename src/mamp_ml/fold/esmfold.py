@@ -164,7 +164,18 @@ def _read_fasta_records(fasta_path: Path) -> List[Tuple[str, str]]:
 
 
 def _import_esmfold():
-    """Lazily import the heavy ESMFold deps, with a clear install hint on failure."""
+    """Lazily import the heavy ESMFold deps, with a clear install hint on failure.
+
+    Two common cluster failures are caught and re-raised with actionable
+    messages:
+
+    * ``ImportError`` — ``transformers`` was never installed. The user is
+      told to ``pip install mamp-ml[esmfold]``.
+    * ``RuntimeError`` mentioning ``torch._six`` — an outdated ``deepspeed``
+      in the user's env tried to import the (PyTorch-2-removed) ``torch._six``
+      module while ``transformers`` was loading. The user is told to remove
+      or upgrade ``deepspeed`` (which the ESMFold path does not need).
+    """
     try:
         from transformers import AutoTokenizer, EsmForProteinFolding
     except ImportError as exc:
@@ -172,6 +183,19 @@ def _import_esmfold():
             "ESMFold backend requires `transformers` and `accelerate`. "
             "Install with: pip install mamp-ml[esmfold]"
         ) from exc
+    except RuntimeError as exc:
+        if "torch._six" in str(exc):
+            raise RuntimeError(
+                "ESMFold could not load `transformers` because an outdated "
+                "`deepspeed` in your environment imports the removed "
+                "`torch._six` module (removed in PyTorch 2.0). ESMFold "
+                "inference does NOT require deepspeed; either uninstall it:\n"
+                "    pip uninstall -y deepspeed\n"
+                "or upgrade it to a torch-2-compatible release:\n"
+                "    pip install --upgrade 'deepspeed>=0.12'\n"
+                "then re-run the same `mamp-ml predict` command."
+            ) from exc
+        raise
     import torch  # noqa: F401  -- pulled into the namespace for the caller
 
     return AutoTokenizer, EsmForProteinFolding

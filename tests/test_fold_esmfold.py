@@ -136,6 +136,41 @@ def _stub_pdb_string(receptor_name: str, n_residues: int) -> str:
     return "\n".join(lines) + "\n"
 
 
+def test_import_esmfold_translates_torch_six_runtime_error(monkeypatch) -> None:
+    """When transformers fails to import because the user has an outdated
+    deepspeed (which references the removed ``torch._six`` module), our
+    helper must re-raise with an actionable message that names deepspeed
+    and gives the user the exact ``pip uninstall`` / upgrade commands."""
+    from mamp_ml.fold.esmfold import _import_esmfold
+
+    def fake_from_transformers():
+        raise RuntimeError(
+            "Failed to import transformers.models.esm.modeling_esmfold "
+            "because of the following error (look up to see its traceback): "
+            "No module named 'torch._six'"
+        )
+
+    # The real import path tries to read transformers.AutoTokenizer etc.; we
+    # replace the entire body via a sys.modules entry that raises on attribute
+    # access, which is what triggers the relevant `from transformers import …`
+    # to fail in _import_esmfold.
+    import sys
+    import types
+
+    class _BoomModule(types.ModuleType):
+        def __getattr__(self, name):
+            fake_from_transformers()
+
+    monkeypatch.setitem(sys.modules, "transformers", _BoomModule("transformers"))
+
+    with pytest.raises(RuntimeError) as exc_info:
+        _import_esmfold()
+    msg = str(exc_info.value)
+    assert "deepspeed" in msg.lower()
+    assert "pip uninstall" in msg
+    assert "torch._six" in msg
+
+
 def test_fold_with_esmfold_missing_fasta(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         fold_with_esmfold(
