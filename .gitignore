@@ -8,6 +8,13 @@
 tests/fixtures/colabfold_output/
 
 # ---------------------------------------------------------------------------
+# Local ColabFold install (created by scripts/install_colabbatch_*.sh)
+# ---------------------------------------------------------------------------
+# Multi-GB conda env + AlphaFold2 model weights. Reproducible from the
+# install script; the user installs locally instead of fetching from git.
+localcolabfold/
+
+# ---------------------------------------------------------------------------
 # Pipeline scratch space
 # ---------------------------------------------------------------------------
 # Working directory created by run_preparation_pipeline.sh /

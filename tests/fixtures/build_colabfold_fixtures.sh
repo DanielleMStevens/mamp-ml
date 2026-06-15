@@ -31,9 +31,15 @@
 #
 # Cost
 # ----
-# Two ~1000-AA receptors with --num-models 1 typically takes 30-60 min on a
-# modern GPU and several hours on CPU. Network access is required (ColabFold
-# queries the MSA API).
+# Empirically, two ~1000-AA receptors with `--num-models 1 --num-recycle 1`
+# (the flags below) take:
+#   GPU (RTX 3070+ / A100 / etc.):   ~5-15 minutes total
+#   Apple Silicon (M2) CPU:          ~3 HOURS per receptor (~6 hours total)
+#   x86 CPU:                         similar to or slower than M2
+#
+# The CPU cost is dominated by JAX-compiled matmul over the 1000+x1000+
+# attention matrices; the GPU is the only practical way to get fast wall
+# clock. Network access is required for the MSA API queries (~5-10 min).
 #
 # After this script completes
 # ----------------------------
@@ -97,11 +103,23 @@ print(f"  Wrote {n} unique receptor records to $RECEPTOR_FASTA")
 PY
 
 # ---------------------------------------------------------------------------
-# Step 2 — Run ColabFold (one model per receptor)
-# Matches the canonical invocation in run_preparation_pipeline.sh:76.
+# Step 2 — Run ColabFold (one model, one recycle per receptor)
+# -----------------------------------------------------------
+# Mirrors run_preparation_pipeline.sh:76 (`--num-models 1`) and additionally
+# pins `--num-recycle 1` to keep wall-clock manageable on CPU-only hosts
+# (M2 Mac, no-GPU CI). Each recycle of a ~1000-AA monomer takes ~30-40 min
+# on M2 CPU; the default of 3 recycles would make the fixture build a
+# multi-hour job. One recycle is sufficient for the equivalence-testing
+# purpose of these fixtures — both the legacy and new preprocessing
+# pipelines see the same input PDBs, so any drop in absolute structural
+# quality does not affect equivalence checks.
+#
+# If you ever want production-grade structures from this script (e.g. for
+# scientific publication), drop the `--num-recycle 1` flag below and budget
+# 6-8 hours of CPU time (or run on a GPU box where the default takes minutes).
 # ---------------------------------------------------------------------------
-echo "Running colabfold_batch (--num-models 1) ..."
-colabfold_batch --num-models 1 "$RECEPTOR_FASTA" "$OUTPUT_DIR"
+echo "Running colabfold_batch (--num-models 1 --num-recycle 1) ..."
+colabfold_batch --num-models 1 --num-recycle 1 "$RECEPTOR_FASTA" "$OUTPUT_DIR"
 
 echo ""
 echo "ColabFold fixtures generated under: $OUTPUT_DIR"
