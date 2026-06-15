@@ -1,0 +1,4 @@
+Receptor                                                                                            Best Model     pLDDT     pTM
+-----------------------------------------------------------------------------------------------------------------------------
+Nicotiana_benthamiana_Niben101Scf02323g01010_CORE                                                   model_1        83.2      0.580
+Solanum_habrochates_scaffold11_CORE                                                                 model_1        85.8      0.603
