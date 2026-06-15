@@ -178,6 +178,21 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # find-colabfold ---------------------------------------------------
+    sp = sub.add_parser(
+        "find-colabfold",
+        help="Locate existing colabfold_batch installations on this system.",
+        description=(
+            "Searches common locations for `colabfold_batch` — the user's "
+            "$PATH, the conda envs implied by $CONDA_PREFIX, the standard "
+            "conda root directories (~/anaconda3, /opt/miniconda3, ...), "
+            "and known localcolabfold paths — and prints each install "
+            "along with the `export PATH=...` line needed to activate it. "
+            "Useful on cluster hosts where ColabFold is already installed "
+            "but the user doesn't know where."
+        ),
+    )
+
     # fold (standalone folding step) --------------------------------------
     sp = sub.add_parser(
         "fold",
@@ -505,24 +520,54 @@ def _run_prepare(args) -> int:
             )
             print(f"   wrote {len(pdbs)} PDB(s) + log.txt to {colabfold_dir}")
         else:
+            from mamp_ml.fold.colabfold import (
+                find_colabfold_installs,
+                format_activation_hint,
+            )
+
             print()
             print("ColabFold has not been run yet for this input.")
-            print(
-                "Run ColabFold on the receptor FASTA above, then re-invoke "
-                "this command. Suggested invocation:"
-            )
-            print()
-            print(
-                f"  colabfold_batch --num-models 1 --num-recycle 1 \\\n"
-                f"      {receptor_fasta} \\\n"
-                f"      {colabfold_dir}"
-            )
-            print()
-            print(
-                "(See scripts/install_colabbatch_linux.sh or "
-                "scripts/install_colabbatch_mac.sh to install ColabFold "
-                "locally, or pass --structure esmfold to fold in-process.)"
-            )
+            existing = find_colabfold_installs()
+            if existing:
+                print()
+                print(
+                    f"Found {len(existing)} existing colabfold_batch install(s) on this system:"
+                )
+                for path, source in existing:
+                    print(f"  {path}  ({source})")
+                print()
+                print(
+                    "Activate the one you want to use, then run colabfold_batch on the "
+                    "receptor FASTA produced above and re-invoke this command. For example:"
+                )
+                print()
+                preferred = existing[0][0]
+                print(f"  {format_activation_hint(preferred)}")
+                print(
+                    f"  colabfold_batch --num-models 1 --num-recycle 1 \\\n"
+                    f"      {receptor_fasta} \\\n"
+                    f"      {colabfold_dir}"
+                )
+            else:
+                print(
+                    "Run ColabFold on the receptor FASTA above, then re-invoke "
+                    "this command. Suggested invocation:"
+                )
+                print()
+                print(
+                    f"  colabfold_batch --num-models 1 --num-recycle 1 \\\n"
+                    f"      {receptor_fasta} \\\n"
+                    f"      {colabfold_dir}"
+                )
+                print()
+                print(
+                    "(No existing colabfold_batch found. See "
+                    "scripts/install_colabbatch_linux.sh or "
+                    "scripts/install_colabbatch_mac.sh to install ColabFold "
+                    "locally, or pass --structure esmfold to fold in-process. "
+                    "Run `mamp-ml find-colabfold` later if you install or "
+                    "load a ColabFold module.)"
+                )
             return 2
 
     # ---- Stage 2/6 ----
@@ -750,6 +795,44 @@ def _resolve_torch_device(device_arg: Optional[str]) -> str:
     return "cpu"
 
 
+def _run_find_colabfold(args) -> int:
+    """Implementation of ``python -m mamp_ml find-colabfold``.
+
+    Lists every reachable ``colabfold_batch`` install. Returns 0 when at
+    least one was found, 1 when the search came up empty. Cluster users
+    typically have ColabFold installed somewhere but don't remember
+    where; this avoids them having to guess.
+    """
+    from mamp_ml.fold.colabfold import (
+        find_colabfold_installs,
+        format_activation_hint,
+    )
+
+    found = find_colabfold_installs()
+    if not found:
+        print("No `colabfold_batch` install found on this system.")
+        print()
+        print("Common installs:")
+        print("  bash scripts/install_colabbatch_linux.sh   # Linux + NVIDIA GPU")
+        print("  bash scripts/install_colabbatch_mac.sh     # macOS (dev only)")
+        print()
+        print(
+            "If your cluster provides ColabFold as a module, run "
+            "`module load colabfold` (or equivalent) and re-run `mamp-ml "
+            "find-colabfold` — it'll then appear on $PATH."
+        )
+        return 1
+
+    print(f"Found {len(found)} `colabfold_batch` install(s):")
+    print()
+    for path, source in found:
+        print(f"  {path}")
+        print(f"    source : {source}")
+        print(f"    activate: {format_activation_hint(path)}")
+        print()
+    return 0
+
+
 def _run_fold(args) -> int:
     """Implementation of ``python -m mamp_ml fold``.
 
@@ -812,6 +895,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.cmd == "fold":
         return _run_fold(args)
+
+    if args.cmd == "find-colabfold":
+        return _run_find_colabfold(args)
 
     if args.cmd == "prepare-fasta":
         from mamp_ml.preprocess import xlsx_to_receptor_fasta
