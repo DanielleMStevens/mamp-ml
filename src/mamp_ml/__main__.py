@@ -62,13 +62,40 @@ import sys
 from typing import List, Optional
 
 
+# Worked-example block surfaced at the bottom of both `mamp-ml --help` and
+# `mamp-ml predict --help` via argparse's `epilog`. Mirrors the canonical
+# workflow documented in the README so users get the answer to "how do I
+# actually run this" without leaving the terminal.
+_USAGE_EXAMPLES = """\
+Example usage
+-------------
+
+  # Full pipeline: spreadsheet -> predictions.csv
+  mamp-ml predict input_data.xlsx --device cuda
+
+  # Use ESMFold instead of ColabFold (no separate conda env needed)
+  mamp-ml predict input_data.xlsx --structure esmfold --device cuda
+
+  # Use a custom-trained model instead of the bundled weights
+  mamp-ml predict input_data.xlsx --weights /path/to/checkpoint.pth
+
+  # Keep every intermediate file (default keeps only predictions + plots)
+  mamp-ml predict input_data.xlsx --keep all
+
+See the README at https://github.com/DanielleMStevens/mamp-ml for the
+full workflow + input spreadsheet format.
+"""
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m mamp_ml",
         description=(
-            "MAMP-ml CLI. Use `prepare` for the one-shot pipeline; "
-            "the per-stage subcommands are escape hatches for debugging."
+            "MAMP-ml CLI. Use `predict` for the one-shot end-to-end pipeline; "
+            "per-stage subcommands are escape hatches for debugging."
         ),
+        epilog=_USAGE_EXAMPLES,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub = parser.add_subparsers(dest="cmd", required=True, metavar="SUBCOMMAND")
 
@@ -219,6 +246,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "invocation and exits cleanly so the user can run ColabFold "
             "and re-invoke this command."
         ),
+        epilog=_USAGE_EXAMPLES,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sp.add_argument("xlsx", help="Path to input .xlsx file")
     sp.add_argument(

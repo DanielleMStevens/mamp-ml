@@ -322,6 +322,59 @@ def test_predict_subparser_accepts_weights_flag(
     assert parsed_default.weights is None
 
 
+def test_top_level_help_includes_end_to_end_example(repo_root: Path) -> None:
+    """`mamp-ml --help` must end with the canonical end-to-end usage block,
+    so users running the CLI cold get the answer to "how do I actually run
+    this" without leaving the terminal. The same block surfaces in the
+    README; here we just guard the CLI-help half of that contract."""
+    import os
+    import subprocess
+    import sys
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = (
+        f"{repo_root / 'src'}{os.pathsep}{env.get('PYTHONPATH', '')}"
+    )
+    result = subprocess.run(
+        [sys.executable, "-m", "mamp_ml", "--help"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
+    )
+    assert result.returncode == 0
+    out = result.stdout
+    assert "Example usage" in out
+    assert "mamp-ml predict input_data.xlsx --device cuda" in out
+    assert "--structure esmfold" in out
+    assert "--weights" in out
+    assert "--keep all" in out
+
+
+def test_predict_help_includes_end_to_end_example(repo_root: Path) -> None:
+    """`mamp-ml predict --help` must also end with the worked-example block."""
+    import os
+    import subprocess
+    import sys
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = (
+        f"{repo_root / 'src'}{os.pathsep}{env.get('PYTHONPATH', '')}"
+    )
+    result = subprocess.run(
+        [sys.executable, "-m", "mamp_ml", "predict", "--help"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
+    )
+    assert result.returncode == 0
+    out = result.stdout
+    assert "Example usage" in out
+    assert "--structure esmfold" in out
+    assert "--keep all" in out
+
+
 def test_predict_subparser_accepts_keep_flag(example_xlsx: Path) -> None:
     """The predict subcommand must accept --keep with choices {default, all}."""
     from mamp_ml.__main__ import _build_parser
