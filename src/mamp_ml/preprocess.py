@@ -50,6 +50,7 @@ __all__ = [
     "read_receptor_xlsx",
     "xlsx_to_receptor_fasta",
     "build_lrr_domain_fasta",
+    "assemble_test_data",
     "sequence_to_property",
     "sequence_to_bulkiness",
     "sequence_to_charge",
@@ -602,3 +603,173 @@ def build_lrr_domain_fasta(
             n_written += 1
 
     return n_written
+
+
+# =============================================================================
+# Section 4 :: Input spreadsheet + LRR-domain FASTA  ->  test_data.csv
+# Replaces scripts/04_data_prep_for_prediction.py
+# =============================================================================
+#
+# Joins the per-row receptor/ligand pairs from the input spreadsheet with the
+# LRR-domain sequences produced by the structure-analysis stage, and writes
+# the assembled "test_data.csv" that the per-residue chemical-feature step
+# (Section 2) consumes.
+#
+# The receptor column in the output CARRIES THE LRR DOMAIN SEQUENCE, not the
+# original full-length protein sequence — the prediction model trains and
+# predicts on the LRR ectodomain rather than the full receptor. Rows whose
+# receptor has no LRR annotation are silently dropped, matching the legacy
+# behaviour (this handles partial structure-stage runs where one of several
+# receptors failed to fold).
+
+
+def _three_part_pipe_key(header: str) -> str:
+    """Reduce a pipe-separated FASTA header to its first three pipe-parts.
+
+    Headers in the LRR-domain FASTA include a trailing ``|LRR_domain`` tag
+    that must not be part of the join key. The canonical key is just the
+    leading ``species|locus|receptor`` triple; this helper extracts it (or
+    returns the full header verbatim if it has fewer than three parts, which
+    matches the fallback behaviour of the legacy parser).
+
+    Examples
+    --------
+    >>> _three_part_pipe_key("Solanum_habrochates|scaffold11|CORE|LRR_domain")
+    'Solanum_habrochates|scaffold11|CORE'
+    >>> _three_part_pipe_key("only|two")
+    'only|two'
+    """
+    parts = header.split("|")
+    if len(parts) >= 3:
+        return "|".join(parts[:3])
+    return header
+
+
+def _load_lrr_domain_sequences(lrr_fasta_path: Path) -> Dict[str, str]:
+    """Load the LRR-domain FASTA into a ``{species|locus|receptor: sequence}`` dict.
+
+    Headers are stripped to their three-part canonical form before being used
+    as keys, so the join below need only build the same form from each
+    spreadsheet row to look up the matching LRR sequence.
+
+    Parameters
+    ----------
+    lrr_fasta_path
+        Path to the FASTA file produced by :func:`build_lrr_domain_fasta`.
+
+    Returns
+    -------
+    dict
+        ``{three_part_pipe_key: lrr_sequence}`` covering every record in the
+        input. Duplicate keys are silently overwritten by the later record
+        (matches legacy behaviour; the upstream FASTA should not have dupes).
+    """
+    records = _read_fasta_records(lrr_fasta_path)
+    return {_three_part_pipe_key(header): sequence for header, sequence in records}
+
+
+def assemble_test_data(
+    xlsx_path: PathLike,
+    lrr_domain_fasta: PathLike,
+    output_csv: PathLike,
+    *,
+    sheet_name: str = "Sheet1",
+) -> pd.DataFrame:
+    """Build the per-row ``test_data.csv`` from the input spreadsheet + LRR FASTA.
+
+    Python replacement for ``scripts/04_data_prep_for_prediction.py``. For
+    every row of the input spreadsheet:
+
+    1. Builds the canonical join identifier
+       ``{plant_species_underscored}|{locus_id}|{receptor}`` and stores it in
+       a new ``Header_Name`` column.
+    2. Replaces the ``receptor_sequence`` column with the LRR-domain
+       sequence for that receptor, looked up from the FASTA file produced by
+       :func:`build_lrr_domain_fasta`. Rows whose receptor has no LRR
+       annotation (e.g. the structure stage failed for that receptor) are
+       silently dropped.
+    3. Renames ``ligand_sequence`` to ``Sequence`` and reorders columns to
+       the legacy layout consumed by Section 2.
+
+    Output column order is::
+
+        Header_Name, plant_species, receptor, locus_id, receptor_sequence,
+        Sequence
+
+    Parameters
+    ----------
+    xlsx_path
+        Path to the input MAMP spreadsheet.
+    lrr_domain_fasta
+        Path to the LRR-domain FASTA produced by
+        :func:`build_lrr_domain_fasta`.
+    output_csv
+        Where to write the assembled CSV. Parent directories are created on
+        demand. Uses ``index=False`` so the layout is byte-stable.
+    sheet_name
+        Sheet to read from the workbook (default ``"Sheet1"``).
+
+    Returns
+    -------
+    pandas.DataFrame
+        The DataFrame written to disk. Carries a freshly-reset ``RangeIndex``
+        so the row labels match a freshly-read CSV.
+
+    Raises
+    ------
+    FileNotFoundError
+        If either ``xlsx_path`` or ``lrr_domain_fasta`` is missing.
+    ValueError
+        If the spreadsheet is missing one of the required columns.
+    """
+    xlsx_path = Path(xlsx_path)
+    lrr_domain_fasta = Path(lrr_domain_fasta)
+    output_csv = Path(output_csv)
+
+    if not lrr_domain_fasta.is_file():
+        raise FileNotFoundError(
+            f"LRR-domain FASTA not found: {lrr_domain_fasta}"
+        )
+
+    # read_receptor_xlsx (Section 1) raises FileNotFoundError + validates the
+    # required columns are present, so the call is the sole gating step for
+    # input validity.
+    df = read_receptor_xlsx(xlsx_path, sheet_name=sheet_name)
+    df = df[list(REQUIRED_INPUT_COLUMNS)].copy()
+
+    # Canonical per-row join key. The underscore replacement matches the
+    # convention used by the upstream FASTA headers; pipes in the spreadsheet
+    # cells are passed through unchanged (none expected in practice).
+    df["Header_Name"] = (
+        df["plant_species"].astype(str).str.replace(" ", "_", regex=False)
+        + "|"
+        + df["locus_id"].astype(str)
+        + "|"
+        + df["receptor"].astype(str)
+    )
+
+    # Pull the LRR sequence for this receptor from the FASTA; rows without a
+    # match get NaN and are dropped immediately below. This is the documented
+    # path for partial structure-stage runs (one of N receptors failed to
+    # fold) and is silent on purpose.
+    lrr_lookup = _load_lrr_domain_sequences(lrr_domain_fasta)
+    df["receptor_sequence"] = df["Header_Name"].map(lrr_lookup)
+    df = df.dropna(subset=["receptor_sequence"]).reset_index(drop=True)
+
+    # Final column rename + order: matches the schema the chemical-feature
+    # step (Section 2) and the model dataset class expect.
+    df = df.rename(columns={"ligand_sequence": "Sequence"})
+    df = df[
+        [
+            "Header_Name",
+            "plant_species",
+            "receptor",
+            "locus_id",
+            "receptor_sequence",
+            "Sequence",
+        ]
+    ]
+
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(output_csv, index=False)
+    return df
