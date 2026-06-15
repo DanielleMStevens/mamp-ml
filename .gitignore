@@ -15,6 +15,16 @@ tests/fixtures/colabfold_output/
 localcolabfold/
 
 # ---------------------------------------------------------------------------
+# Python bytecode caches
+# ---------------------------------------------------------------------------
+__pycache__/
+*.pyc
+*.pyo
+
+# Editor / IDE state
+.vscode/
+
+# ---------------------------------------------------------------------------
 # Pipeline scratch space
 # ---------------------------------------------------------------------------
 # Working directory created by run_preparation_pipeline.sh /

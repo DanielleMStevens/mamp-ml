@@ -1,102 +1,184 @@
 # mamp-ml
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1RSMHMNVxAQiz-V5PAfHaKG9V-CkKYurH?usp=sharing)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/DanielleMStevens/mamp-ml/blob/version2/mamp_ml_colab.ipynb)
 
+Deep-learning predictor for plant receptor–ligand (MAMP) immunogenicity, built on the [ESM-2](https://github.com/facebookresearch/esm) protein language model with structure-aware features from [AlphaFold2 / ColabFold](https://github.com/sokrypton/ColabFold). Achieves 74% accuracy on a held-out test set; supports high-throughput screening of LRR receptor–ligand combinations.
 
+> **Workflow at a glance**
+> ```bash
+> mamp-ml predict your_input.xlsx
+> ```
+> That single command runs everything: receptor FASTA generation → ColabFold (with clear gating) → LRR annotation → B-factor analysis → chemical-feature CSV → ESM-2 inference → `predictions.csv`.
 
-This repository contains the code for mamp-ml, a deep learning approach to epitope immunogenicity in plants. If you plan to run on a small number of receptor-epitope combinations (less than 10 receptors), we recommend you use Google Colab. If you plan to run on 100-1000s of receptor-epitope combinations, we recommend you install locally, have access to a GPU (at least A5000) and potenitally adjust the code to pull MSAs for receptor structure generation locally (future enhancement). To do so, please see info from localcolab: [link here](https://github.com/YoshitakaMo/localcolabfold).
+---
 
-## Authors
-* __Danielle M. Stevens__ <a itemprop="sameAs" content="https://orcid.org/0000-0001-5630-137X" href="https://orcid.org/0000-0001-5630-137X" target="orcid.widget" rel="me noopener noreferrer" style="vertical-align:top;"><img src="https://orcid.org/sites/default/files/images/orcid_16x16.png" style="width:1em;margin-right:.5em;" alt="ORCID iD icon"></a>   </br>
-_Dept. of Plant & Microbial Biology, University of California, Berkeley_
+## Quickstart on Google Colab
 
-* __David Yang__ </br>
-_Center for Computational Biology, University of California, Berkeley_
+The fastest way to get predictions: click the **Open in Colab** badge above and run the notebook. It installs `mamp-ml`, walks you through uploading your spreadsheet, runs ColabFold on a free T4 GPU, runs ESM-2 inference, and offers `predictions.csv` for download. ~15 minutes end-to-end for typical inputs.
 
-* __Tatiana Liang__ </br>
-_Dept. of Plant & Microbial Biology, University of California, Berkeley_
+---
 
-* __Tianrun Li__ <a itemprop="sameAs" content="https://orcid.org/0000-0002-8589-4634" href="https://orcid.org/0000-0002-8589-4634" target="orcid.widget" rel="me noopener noreferrer" style="vertical-align:top;"><img src="https://orcid.org/sites/default/files/images/orcid_16x16.png" style="width:1em;margin-right:.5em;" alt="ORCID iD icon"></a> </br> 
-_Dept. of Plant Pathology, University of California, Davis_
+## Local install
 
-* __Brandon Vega__ </br>
-_Dept. of Plant & Microbial Biology, University of California, Berkeley_
+Recommended for users with 10+ receptors who want repeated runs.
 
-* __Gitta Coaker__ <a itemprop="sameAs" content="https://orcid.org/0000-0003-0899-2449" href="https://orcid.org/0000-0003-0899-2449" target="orcid.widget" rel="me noopener noreferrer" style="vertical-align:top;"><img src="https://orcid.org/sites/default/files/images/orcid_16x16.png" style="width:1em;margin-right:.5em;" alt="ORCID iD icon"></a> </br>
-_Dept. of Plant Pathology, University of California, Davis_
+### 1. Install the Python package
 
-* __Ksenia Krasileva__ <a itemprop="sameAs" content="https://orcid.org/0000-0002-1679-0700" href="https://orcid.org/0000-0002-1679-0700" target="orcid.widget" rel="me noopener noreferrer" style="vertical-align:top;"><img src="https://orcid.org/sites/default/files/images/orcid_16x16.png" style="width:1em;margin-right:.5em;" alt="ORCID iD icon"></a> </br>
-_Dept. of Plant & Microbial Biology, University of California, Berkeley_, </br>
-_Center for Computational Biology, University of California, Berkeley_
+```bash
+# from PyPI (once published)
+pip install mamp-ml
 
+# or directly from this repo (version2 branch)
+pip install git+https://github.com/DanielleMStevens/mamp-ml.git@version2
 
-## Abstract
-
->Eukaryotes detect biomolecules through surface-localized receptors, a central signaling response hub. A subset of receptors survey for pathogens, induce immunity, and restrict pathogen growth. Comparative genomics of both hosts and pathogens has unveiled vast sequence variation in receptors and potential ligands, creating an experimental bottleneck. We have developed mamp-ml, a machine learning framework for predicting plant receptor-ligand interactions. We leveraged existing functional data from over two decades of foundational research, together with the large protein language model ESM-2, to build a pipeline and model that predicts immunogenic outcomes using a combination of receptor-ligand features. Our model achieves 74% prediction accuracy on a held-out test set, even when an experimental structure is lacking. Our approach enables high-throughput screening of LRR receptor-ligand combinations and provides a computational framework for engineering plant immune systems.
-
-## General installation and running instructions:
-
-To install the software needed before model prediction, AlphaFold2 via colabfold and LRR-Annotation, we will run the following command:
+# or editable from a clone
+git clone --branch version2 https://github.com/DanielleMStevens/mamp-ml.git
+cd mamp-ml
+pip install -e .
 ```
+
+The pretrained checkpoint (`mamp_ml_weights.pth`, ~33 MB) is bundled inside the wheel — no separate download.
+
+### 2. Install ColabFold (only for structure folding)
+
+ColabFold is the only piece `mamp-ml` doesn't bundle, since it's GPU-specific and heavy. One of:
+
+```bash
+# macOS / Apple Silicon (CPU-only JAX)
+bash scripts/install_colabbatch_mac.sh
+
+# Linux + NVIDIA GPU (CUDA JAX)
+bash scripts/install_colabbatch_linux.sh
+
+# or skip — you can use Google Colab just for the folding step and pull the PDBs back
+```
+
+Or run everything (Python package + ColabFold) in one command via:
+
+```bash
 bash install_software.sh
 ```
 
-Please prepare an excel file in the following format (see example_data.xlsx as an example):
-```
-plant_species | receptor | locus_id | receptor_sequence | ligand_sequence
-```
+### 3. Predict
 
-Once your excel file with receptor and ligands sequences is prepared, follow the below pipeline:
-```
-# this will transform your excel sheet into a fasta file
-bash mamp-ml/prepare_input_data.sh input_data.xlsx
-
-# activate AlphaFold and run (please update your path)
-conda activate localfold
-export PATH="/global/scratch/users/dmstev/localcolabfold/colabfold-conda/bin:$PATH" 
-colabfold_batch --num-models 1 ./mamp-ml/intermediate_files/receptor_full_length.fasta \
-   ./mamp-ml/intermediate_files/receptor_only/
-
-# once AlphaFold models are complete, run to process the model structures via LRR-Annotation
-# and prep data for prediction via mamp-ml
-bash run_prediction_pipeline.sh input_data.xlsx
-
-# deactivate conda environment to activate another
-conda deactivate localfold
-conda activate esmfold
-python mamp-ml/main_train.py \
-    --model esm2_bfactor_weighted \
-    --eval_only_data_path /content/mamp-ml/intermediate_files/ready_test_data.csv \
-    --model_checkpoint_path /content/mamp-ml/mamp_ml_weights.pth \
-    --device cpu \
-    --disable_wandb
+```bash
+mamp-ml predict your_input.xlsx --device cuda    # GPU
+mamp-ml predict your_input.xlsx --device cpu     # CPU (slower)
 ```
 
-A sucessful run will prodice a csv file with processed input data (plant species, receptor, locus_id, ligand and receptor sequence) as well as prediction and their associated softmax probabilities. 
+Output: `intermediate_files/predictions.csv`.
 
-## Computational requirements:
+---
 
-To run this package locally, we recommend having compute with a NIVDIA GPU available and at least 16 GB RAM and 16 GB VRAM. The main step that is slow + memory intensive is running AlphaFold. While we were able to run predictions on a 1080Ti, we found considerable runtime improvements using RTX A5000 cards. 
+## Input format
 
+A single Excel file (`.xlsx`, `Sheet1`) with these columns — `example_data.xlsx` in this repo is the canonical reference:
 
-__If you use this tool, please cite the following paper:__ </br>
-Stevens et al. 2025. Mamp-ml: a deep learning approach to epitope immunogenicity in plants. _BioRxiv._ </br> 
-DOI:
+| Column | Description |
+|---|---|
+| `plant_species` | Species the receptor comes from (e.g. `Solanum habrochates`) |
+| `receptor` | Receptor family / short name (e.g. `CORE`) |
+| `locus_id` | Unique locus identifier (e.g. `scaffold11`) |
+| `receptor_sequence` | Full-length receptor amino-acid sequence (one-letter code) |
+| `ligand_sequence` | Ligand (epitope) amino-acid sequence to predict immunogenicity for |
 
+Each row is one receptor–ligand pair to score. Multiple rows can share a receptor; the structure is folded once and re-used.
 
-Details on building this pipeline and model can be found in another GitHub Repo: [mamp-prediction-ml](https://github.com/DanielleMStevens/mamp_prediction_ml).
+---
 
+## How `mamp-ml predict` works
 
-License 
-----
-Code is freely available under the MIT license  
+```
+your_input.xlsx
+      │
+      ▼  ① receptor FASTA
+intermediate_files/receptor_full_length.fasta
+      │
+      ▼  ② ColabFold (external — gated cleanly if not yet run)
+intermediate_files/receptor_only/{log.txt, *.pdb}
+      │
+      ▼  ③ structure-stage (best-model selection + LRR annotation)
+intermediate_files/{alphafold_scores.txt, lrr_annotation_results.txt,
+                   pdb_for_lrr_annotator/*.pdb}
+      │
+      ▼  ④ LRR-domain FASTA + ⑤ B-factor bandpass analysis
+intermediate_files/{lrr_domain_sequences.fasta,
+                   bfactor_winding_lrr_segments.csv}
+      │
+      ▼  ⑥ test-data assembly + ⑦ chemical features
+intermediate_files/{test_data.csv, ready_test_data.csv}
+      │
+      ▼  ⑧ ESM-2 inference (bundled mamp_ml_weights.pth)
+intermediate_files/predictions.csv      ← what you want
+```
 
-Have data to contribute? 
-----
-We are always looking to improve mamp-ml to improve prediction accuracy and expand to other LRR-PRR receptors and their protein ligands. Please feel free to contact us if you have recently published a dataset or would like to contribute to make this tool better!
+`mamp-ml predict` does all eight steps in one shot. If ColabFold hasn't been run yet for your input, it stops cleanly after step ② and prints the exact `colabfold_batch` command for you to run before re-invoking it.
 
+---
 
-Contact 
-----
-Please feel free to contact me directly with any questions or issues with the code  
-Danielle Stevens - [@dani_m_stevens](https://bsky.app/profile/danimstevens.bsky.social) - dmstev@berkeley.edu
+## Power-user CLI
+
+Each pipeline stage is exposed as its own subcommand for debugging or partial re-runs:
+
+```bash
+mamp-ml prepare-fasta INPUT.xlsx out.fasta
+mamp-ml structure-stage COLABFOLD_DIR scores.txt PDB_DIR lrr.txt
+mamp-ml lrr-domain-fasta lrr.txt receptor.fasta out.fasta
+mamp-ml bfactor PDB_DIR CACHE_DIR out.csv
+mamp-ml assemble-test-data INPUT.xlsx lrr_fasta out.csv
+mamp-ml chemical-features in.csv out.csv
+
+# Or run the full prep pipeline (no model inference) in one shot:
+mamp-ml prepare INPUT.xlsx
+```
+
+`mamp-ml --help` lists everything.
+
+---
+
+## Computational requirements
+
+| Step | Resource |
+|---|---|
+| ColabFold folding | GPU strongly recommended (~5 min/receptor on RTX 3070+; ~3 hr/receptor on M2 CPU) |
+| ESM-2 inference | CPU works for 10s of pairs (~5 min); GPU recommended for 100s+ |
+| Disk | ~4 GB for ColabFold + AF2 params; bundled MAMP-ml weights ~33 MB |
+| RAM | 16 GB minimum |
+
+The ColabFold + ESM-2 pieces are the only heavy dependencies; everything else in `mamp-ml` is light Python + scipy.
+
+---
+
+## Citation
+
+> Stevens *et al.* 2025. **Mamp-ml: a deep-learning approach to epitope immunogenicity in plants.** *BioRxiv.* DOI: *(forthcoming)*
+
+Pipeline + model design details: see the companion repo [mamp-prediction-ml](https://github.com/DanielleMStevens/mamp_prediction_ml).
+
+---
+
+## Authors
+
+| | |
+|---|---|
+| **Danielle M. Stevens** [![ORCID](https://orcid.org/sites/default/files/images/orcid_16x16.png)](https://orcid.org/0000-0001-5630-137X) | Dept. of Plant & Microbial Biology, UC Berkeley |
+| **David Yang** | Center for Computational Biology, UC Berkeley |
+| **Tatiana Liang** | Dept. of Plant & Microbial Biology, UC Berkeley |
+| **Tianrun Li** [![ORCID](https://orcid.org/sites/default/files/images/orcid_16x16.png)](https://orcid.org/0000-0002-8589-4634) | Dept. of Plant Pathology, UC Davis |
+| **Brandon Vega** | Dept. of Plant & Microbial Biology, UC Berkeley |
+| **Gitta Coaker** [![ORCID](https://orcid.org/sites/default/files/images/orcid_16x16.png)](https://orcid.org/0000-0003-0899-2449) | Dept. of Plant Pathology, UC Davis |
+| **Ksenia Krasileva** [![ORCID](https://orcid.org/sites/default/files/images/orcid_16x16.png)](https://orcid.org/0000-0002-1679-0700) | Dept. of Plant & Microbial Biology + Computational Biology, UC Berkeley |
+
+---
+
+## Contact + contributions
+
+Issues / questions: [github.com/DanielleMStevens/mamp-ml/issues](https://github.com/DanielleMStevens/mamp-ml/issues), or **Danielle Stevens** ([@dani_m_stevens](https://bsky.app/profile/danimstevens.bsky.social), dmstev@berkeley.edu).
+
+Have a new dataset or want to extend the model to other LRR-PRR families? Please reach out — we're actively working to expand coverage.
+
+---
+
+## License
+
+MIT (see `LICENSE.txt`).

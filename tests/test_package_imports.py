@@ -70,10 +70,16 @@ def test_lrr_extract_sequences_module() -> None:
     assert hasattr(mod, "LRRSequenceExtractor")
 
 
-def test_bfactor_peaks_module() -> None:
-    """`analyze_bfactor_peaks` is importable under its new package path."""
-    mod = _try_import("mamp_ml.lrr_annotation.analyze_bfactor_peaks")
-    assert hasattr(mod, "analyze_lrr_bfactor_peaks")
+def test_lrr_features_module() -> None:
+    """`mamp_ml.lrr_features` (B-factor bandpass) is importable.
+
+    Replaces the obsolete ``analyze_bfactor_peaks`` smoke test — that
+    module was deleted in checkpoint 7 in favour of the fresh
+    :mod:`mamp_ml.lrr_features` implementation.
+    """
+    mod = _try_import("mamp_ml.lrr_features")
+    assert hasattr(mod, "compute_bfactor_lrr_segments")
+    assert hasattr(mod, "write_bfactor_lrr_segments")
 
 
 def test_losses_subpackage() -> None:

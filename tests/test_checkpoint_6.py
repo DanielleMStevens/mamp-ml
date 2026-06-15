@@ -205,6 +205,28 @@ def test_colab_notebook_is_valid_jupyter_v4(repo_root: Path) -> None:
         assert "source" in cell
 
 
+def test_readme_documents_the_new_cli(repo_root: Path) -> None:
+    """The README must showcase the seamless ``mamp-ml predict`` UX and
+    must not still tell users to invoke the deleted legacy scripts."""
+    readme = (repo_root / "README.md").read_text(encoding="utf-8")
+    assert "mamp-ml predict" in readme, (
+        "README must document the one-shot `mamp-ml predict` command"
+    )
+    assert "pip install" in readme, "README must document the pip install path"
+    # Must not still tell users to invoke the legacy scripts (they're deleted).
+    for legacy in (
+        "01_convert_sheet_to_fasta.R",
+        "02_alphafold_to_lrr_annotation.py",
+        "03_parse_lrr_annotation.py",
+        "04_data_prep_for_prediction.py",
+        "05_chemical_conversion.R",
+        "main_train.py",
+    ):
+        assert legacy not in readme, (
+            f"README still references the deleted legacy script '{legacy}'"
+        )
+
+
 def test_colab_notebook_uses_mamp_ml_cli(repo_root: Path) -> None:
     """The Colab notebook must invoke the top-level `mamp-ml` CLI, not the
     legacy bash scripts or the per-stage subcommands directly. This is the
