@@ -542,6 +542,188 @@ def test_fold_with_esmfold_sets_chunk_size_when_provided(
     assert chunk_recorded.get("size") == 32
 
 
+def _patch_tensor_to_noop(monkeypatch) -> None:
+    """Patch ``torch.Tensor.to`` to a no-op so tests can pass ``device='cuda'``
+    even on machines without CUDA (avoids triggering a real CUDA init when
+    the fake model's tokenizer outputs run through ``.to(device)``)."""
+    import torch
+    monkeypatch.setattr(torch.Tensor, "to", lambda self, *a, **kw: self)
+
+
+def _build_fake_esmfold_factory(captured: dict):
+    """Shared helper: build a mocked (tokenizer, model) factory pair that
+    records what chunk size set_chunk_size was called with."""
+    from unittest.mock import MagicMock
+
+    def fake_tokenizer_factory(model_id):
+        def tokenizer(seq, return_tensors="pt", add_special_tokens=False):
+            import torch
+            return {"input_ids": torch.zeros((1, len(seq)), dtype=torch.long)}
+        return tokenizer
+
+    def fake_model_factory(model_id):
+        model = MagicMock()
+        model.esm = MagicMock()
+        model.esm.half.return_value = model.esm
+        model.to.return_value = model
+        model.eval.return_value = None
+        model.trunk = MagicMock()
+
+        def record_chunk(n):
+            captured["chunk_size_call"] = n
+
+        model.trunk.set_chunk_size = record_chunk
+
+        def fake_call(**inputs):
+            import torch
+            n = inputs["input_ids"].shape[1]
+            plddt = torch.zeros((1, n, 37), dtype=torch.float32)
+            plddt[0, :, 1] = 80.0
+            out = MagicMock()
+            out.plddt = plddt
+            return out
+
+        model.side_effect = fake_call
+        model.output_to_pdb = lambda outputs: ["MODEL     1\nEND\n"]
+        return model
+
+    return fake_tokenizer_factory, fake_model_factory
+
+
+def test_fold_with_esmfold_auto_picks_chunk_size_on_cuda(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """When chunk_size is None and device starts with cuda, the auto-pick
+    runs after the model lands on device and applies the chosen size."""
+    import mamp_ml.fold.esmfold as ef
+
+    _patch_tensor_to_noop(monkeypatch)
+    fasta = tmp_path / "in.fasta"
+    fasta.write_text(">R\nACDEFGHIKLMNPQRSTVWY\n")
+
+    captured: dict = {}
+    tok_factory, model_factory = _build_fake_esmfold_factory(captured)
+    monkeypatch.setattr(
+        ef,
+        "_import_esmfold",
+        lambda: (
+            type("T", (), {"from_pretrained": staticmethod(tok_factory)}),
+            type("M", (), {"from_pretrained": staticmethod(model_factory)}),
+        ),
+    )
+    # Force the auto-picker to return 64 regardless of host VRAM.
+    monkeypatch.setattr(ef, "auto_pick_chunk_size", lambda device: 64)
+
+    ef.fold_with_esmfold(fasta, tmp_path / "out", device="cuda")
+    assert captured.get("chunk_size_call") == 64
+
+    out = capsys.readouterr().out
+    assert "auto-selected from free VRAM" in out
+    assert "64" in out
+
+
+def test_fold_with_esmfold_skips_chunking_when_auto_returns_none(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """A CUDA host with enough headroom (auto-pick returns None) skips
+    set_chunk_size and surfaces the "disabled" hint so the user sees it."""
+    import mamp_ml.fold.esmfold as ef
+
+    _patch_tensor_to_noop(monkeypatch)
+    fasta = tmp_path / "in.fasta"
+    fasta.write_text(">R\nACDEFGHIKLMNPQRSTVWY\n")
+
+    captured: dict = {}
+    tok_factory, model_factory = _build_fake_esmfold_factory(captured)
+    monkeypatch.setattr(
+        ef,
+        "_import_esmfold",
+        lambda: (
+            type("T", (), {"from_pretrained": staticmethod(tok_factory)}),
+            type("M", (), {"from_pretrained": staticmethod(model_factory)}),
+        ),
+    )
+    monkeypatch.setattr(ef, "auto_pick_chunk_size", lambda device: None)
+
+    ef.fold_with_esmfold(fasta, tmp_path / "out", device="cuda")
+    assert "chunk_size_call" not in captured
+
+    out = capsys.readouterr().out
+    assert "disabled" in out
+    assert "24 GB" in out
+
+
+def test_fold_with_esmfold_user_supplied_chunk_size_overrides_auto(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """When the user passes an explicit chunk_size, the auto-picker is not
+    consulted and the log line labels the source."""
+    import mamp_ml.fold.esmfold as ef
+
+    _patch_tensor_to_noop(monkeypatch)
+    fasta = tmp_path / "in.fasta"
+    fasta.write_text(">R\nACDEFGHIKLMNPQRSTVWY\n")
+
+    captured: dict = {}
+    tok_factory, model_factory = _build_fake_esmfold_factory(captured)
+    monkeypatch.setattr(
+        ef,
+        "_import_esmfold",
+        lambda: (
+            type("T", (), {"from_pretrained": staticmethod(tok_factory)}),
+            type("M", (), {"from_pretrained": staticmethod(model_factory)}),
+        ),
+    )
+
+    auto_called: dict = {"count": 0}
+    def boom_if_called(device):
+        auto_called["count"] += 1
+        return 999  # would be obvious in the output if it leaked
+    monkeypatch.setattr(ef, "auto_pick_chunk_size", boom_if_called)
+
+    ef.fold_with_esmfold(fasta, tmp_path / "out", device="cuda", chunk_size=32)
+    # Explicit value used, auto-picker never consulted.
+    assert captured.get("chunk_size_call") == 32
+    assert auto_called["count"] == 0
+
+    out = capsys.readouterr().out
+    assert "user-supplied" in out
+    assert "32" in out
+
+
+def test_fold_with_esmfold_skips_auto_pick_on_cpu(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """On non-CUDA devices, the auto-picker is not consulted at all so the
+    CPU path is identical to the previous behaviour (no chunking, no log
+    noise about VRAM)."""
+    import mamp_ml.fold.esmfold as ef
+
+    fasta = tmp_path / "in.fasta"
+    fasta.write_text(">R\nACDEFGHIKLMNPQRSTVWY\n")
+
+    captured: dict = {}
+    tok_factory, model_factory = _build_fake_esmfold_factory(captured)
+    monkeypatch.setattr(
+        ef,
+        "_import_esmfold",
+        lambda: (
+            type("T", (), {"from_pretrained": staticmethod(tok_factory)}),
+            type("M", (), {"from_pretrained": staticmethod(model_factory)}),
+        ),
+    )
+
+    auto_called: dict = {"count": 0}
+    def auto_stub(device):
+        auto_called["count"] += 1
+        return None
+    monkeypatch.setattr(ef, "auto_pick_chunk_size", auto_stub)
+
+    ef.fold_with_esmfold(fasta, tmp_path / "out", device="cpu")
+    assert "chunk_size_call" not in captured
+    assert auto_called["count"] == 0
+
+
 def test_fold_with_esmfold_catches_cuda_oom_with_actionable_message(
     tmp_path: Path, monkeypatch
 ) -> None:

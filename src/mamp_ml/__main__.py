@@ -352,9 +352,10 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "ESMFold trunk chunk size (typical: 128 / 64 / 32). Lowers peak "
-            "VRAM at the cost of some wall-clock. Required on GPUs with "
-            "< ~20 GB VRAM at the 1024-AA cap. Default: no chunking. "
-            "Ignored for --structure colabfold."
+            "VRAM at the cost of some wall-clock. By default an appropriate "
+            "value is auto-picked from the host's free VRAM on CUDA devices; "
+            "pass an explicit integer to override. Ignored for --structure "
+            "colabfold."
         ),
     )
     sp.add_argument(
