@@ -423,6 +423,63 @@ def test_predict_subparser_accepts_chunk_size_flag(example_xlsx: Path) -> None:
     assert parsed_default.chunk_size is None
 
 
+@pytest.mark.parametrize(
+    "free_gb, expected",
+    [
+        (40.0, None),   # plenty of headroom -> no chunking
+        (24.0, None),   # exactly at the upper threshold
+        (23.9, 128),    # just below the upper threshold
+        (16.0, 128),
+        (15.9, 64),
+        (10.0, 64),
+        (9.9, 32),
+        (6.0, 32),
+        (5.9, 16),
+        (2.0, 16),
+    ],
+)
+def test_auto_pick_chunk_size_from_free_vram(monkeypatch, free_gb, expected) -> None:
+    """The auto-pick must walk the documented threshold table cleanly."""
+    import sys
+    import types
+    from mamp_ml.fold import esmfold as ef
+
+    fake_torch = types.SimpleNamespace(
+        cuda=types.SimpleNamespace(
+            is_available=lambda: True,
+            mem_get_info=lambda: (int(free_gb * 1024 ** 3), int(80 * 1024 ** 3)),
+        )
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    assert ef.auto_pick_chunk_size("cuda") == expected
+
+
+def test_auto_pick_chunk_size_returns_none_on_cpu(monkeypatch) -> None:
+    """The auto-pick is a no-op for non-CUDA devices."""
+    from mamp_ml.fold import esmfold as ef
+
+    assert ef.auto_pick_chunk_size("cpu") is None
+    assert ef.auto_pick_chunk_size("mps") is None
+
+
+def test_auto_pick_chunk_size_returns_64_when_mem_get_info_unavailable(
+    monkeypatch,
+) -> None:
+    """Driver setups without ``cuda.mem_get_info`` fall back to a conservative 64."""
+    import sys
+    import types
+    from mamp_ml.fold import esmfold as ef
+
+    def boom():
+        raise RuntimeError("mem_get_info not available")
+
+    fake_torch = types.SimpleNamespace(
+        cuda=types.SimpleNamespace(is_available=lambda: True, mem_get_info=boom)
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    assert ef.auto_pick_chunk_size("cuda") == 64
+
+
 def test_fold_with_esmfold_sets_chunk_size_when_provided(
     tmp_path: Path, monkeypatch
 ) -> None:

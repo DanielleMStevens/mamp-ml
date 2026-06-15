@@ -48,6 +48,7 @@ __all__ = [
     "render_colabfold_compatible_log",
     "make_colabfold_compatible_pdb_filename",
     "normalize_receptor_name",
+    "auto_pick_chunk_size",
 ]
 
 #: Hard upper bound on input sequence length set by ESMFold's positional
@@ -163,6 +164,70 @@ def _read_fasta_records(fasta_path: Path) -> List[Tuple[str, str]]:
     return records
 
 
+def auto_pick_chunk_size(device: str) -> "int | None":
+    """Pick an ESMFold trunk chunk size from the host's free VRAM.
+
+    Called after the model has been moved onto ``device`` so the free-VRAM
+    query reflects what's actually available for the per-layer activations
+    of the folding-trunk forward pass.
+
+    Thresholds are derived from ESMFold's empirical ~17 GB peak VRAM at the
+    1024-AA cap (no chunking, fp32 trunk). We aim for ~20 % headroom over
+    whatever ChatGPT-style consensus says fits at a given chunk size:
+
+    ====================  =====================
+    Free VRAM             Chunk size returned
+    ====================  =====================
+    ≥ 24 GB               ``None`` (full speed)
+    16-24 GB              ``128``
+    10-16 GB              ``64``
+    6-10 GB               ``32``
+    < 6 GB                ``16`` (last resort)
+    ====================  =====================
+
+    Parameters
+    ----------
+    device
+        Torch device string (e.g. ``"cuda"``, ``"cuda:0"``, ``"cpu"``,
+        ``"mps"``).
+
+    Returns
+    -------
+    int or None
+        Suggested chunk size, or ``None`` to skip chunking entirely.
+        Returns ``None`` for any non-CUDA device — chunking only meaningfully
+        helps CUDA where peak VRAM is a hard constraint.
+    """
+    if not device.startswith("cuda"):
+        return None
+
+    try:
+        import torch
+    except ImportError:
+        return None
+    if not torch.cuda.is_available():
+        return None
+
+    try:
+        free_bytes, _total_bytes = torch.cuda.mem_get_info()
+    except (RuntimeError, AttributeError):
+        # Some PyTorch versions / driver setups don't expose mem_get_info.
+        # In that case, default to a conservative 64 — fits most cluster
+        # GPUs and won't surprise the user.
+        return 64
+
+    free_gb = free_bytes / (1024 ** 3)
+    if free_gb >= 24:
+        return None
+    if free_gb >= 16:
+        return 128
+    if free_gb >= 10:
+        return 64
+    if free_gb >= 6:
+        return 32
+    return 16
+
+
 def _import_esmfold():
     """Lazily import the heavy ESMFold deps, with a clear install hint on failure.
 
@@ -245,9 +310,11 @@ def fold_with_esmfold(
         the forward pass. This splits the folding-trunk's triangular attention
         into chunks of that many tokens, dramatically reducing peak VRAM at
         the cost of some wall-clock. Typical values: 128 (modest savings),
-        64 (~half the peak), 32 (~quarter). Required for sequences near the
-        1024-AA cap on GPUs with < 24 GB VRAM. Default ``None`` means no
-        chunking (highest speed; requires ~20+ GB VRAM at full length).
+        64 (~half the peak), 32 (~quarter). If ``None`` (default) AND ``device``
+        is a CUDA device, an appropriate chunk size is picked automatically
+        from the host's free VRAM via :func:`auto_pick_chunk_size`. Pass an
+        explicit integer to override that auto-pick; pass any explicit value
+        to skip the auto-pick on CPU/MPS too.
 
     Returns
     -------
@@ -291,20 +358,31 @@ def fold_with_esmfold(
     model = model.to(device)
     model.eval()
 
+    # Auto-pick a chunk size on CUDA devices when the user didn't pass one
+    # explicitly. Querying free VRAM AFTER the model has landed on device
+    # gives a realistic estimate of how much memory is left for activations.
+    chunk_size_source = "user-supplied"
+    if chunk_size is None and device.startswith("cuda"):
+        chunk_size = auto_pick_chunk_size(device)
+        chunk_size_source = "auto-selected from free VRAM"
+
     # Trunk chunking dramatically reduces peak VRAM in the folding trunk's
     # triangular-attention layers at the cost of some wall-clock. ESMFold
-    # exposes this via `model.trunk.set_chunk_size(N)` (no setter / no-op
-    # if N is None).
+    # exposes this via `model.trunk.set_chunk_size(N)`.
     if chunk_size is not None:
         try:
             model.trunk.set_chunk_size(chunk_size)
-            print(f"  (ESMFold trunk chunk size: {chunk_size})")
+            print(f"  (ESMFold trunk chunk size: {chunk_size} [{chunk_size_source}])")
         except AttributeError:
             warnings.warn(
                 "Installed transformers version does not expose "
-                "`model.trunk.set_chunk_size`; --chunk-size ignored.",
+                "`model.trunk.set_chunk_size`; chunk-size ignored.",
                 stacklevel=2,
             )
+    elif device.startswith("cuda"):
+        # CUDA with >= 24 GB free -> no chunking, full speed. Worth
+        # surfacing so the user knows the auto-pick decided to skip.
+        print("  (ESMFold trunk chunking: disabled — >= 24 GB free VRAM)")
 
     log_records: List[Tuple[str, int, int, float, float]] = []
     pdbs_written: List[Path] = []
