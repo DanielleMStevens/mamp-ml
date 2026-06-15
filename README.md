@@ -41,17 +41,14 @@ The pretrained checkpoint (`mamp_ml_weights.pth`, ~33 MB) is bundled inside the 
 
 ### 2. Install ColabFold (only for structure folding)
 
-ColabFold is the only piece `mamp-ml` doesn't bundle, since it's GPU-specific and heavy. One of:
+ColabFold is the only piece `mamp-ml` doesn't bundle, since it's GPU-specific and heavy.
 
 ```bash
-# macOS / Apple Silicon (CPU-only JAX)
-bash scripts/install_colabbatch_mac.sh
-
-# Linux + NVIDIA GPU (CUDA JAX)
+# Linux + NVIDIA GPU (recommended)
 bash scripts/install_colabbatch_linux.sh
-
-# or skip — you can use Google Colab just for the folding step and pull the PDBs back
 ```
+
+No local GPU? Use the [Google Colab notebook](https://colab.research.google.com/github/DanielleMStevens/mamp-ml/blob/version2/mamp_ml_colab.ipynb) — it provisions a free T4 and runs the whole pipeline end-to-end.
 
 Or run everything (Python package + ColabFold) in one command via:
 
@@ -59,11 +56,19 @@ Or run everything (Python package + ColabFold) in one command via:
 bash install_software.sh
 ```
 
+<details>
+<summary>macOS install (for package development, not for predictions)</summary>
+
+A macOS install path exists for contributors who need to test the preparation pipeline locally — `bash scripts/install_colabbatch_mac.sh` — but actual prediction wall-clock on Apple CPU is impractical. Run inference on a CUDA host or Colab.
+
+</details>
+
 ### 3. Predict
 
+A CUDA-capable GPU is required for reasonable wall-clock — ColabFold and ESM-2 are both heavy.
+
 ```bash
-mamp-ml predict your_input.xlsx --device cuda    # GPU
-mamp-ml predict your_input.xlsx --device cpu     # CPU (slower)
+mamp-ml predict your_input.xlsx --device cuda
 
 # use ESMFold instead of ColabFold (no separate conda env needed):
 mamp-ml predict your_input.xlsx --structure esmfold --device cuda
@@ -165,14 +170,16 @@ mamp-ml prepare INPUT.xlsx
 
 ## Computational requirements
 
+A **CUDA-capable GPU is required**. ColabFold needs CUDA for tractable folding wall-clock, and ESM-2 inference is dominated by attention over ~1000-residue sequences. We've tested on RTX 3070+, RTX 4090, A100, and the free T4 in Google Colab.
+
 | Step | Resource |
 |---|---|
-| ColabFold folding | GPU strongly recommended (~5 min/receptor on RTX 3070+; ~3 hr/receptor on M2 CPU) |
-| ESM-2 inference | CPU works for 10s of pairs (~5 min); GPU recommended for 100s+ |
+| ColabFold folding | NVIDIA GPU, ~5 min/receptor on RTX 3070+ |
+| ESM-2 inference | NVIDIA GPU, ~30s for ~100 receptor-ligand pairs |
 | Disk | ~4 GB for ColabFold + AF2 params; bundled MAMP-ml weights ~33 MB |
 | RAM | 16 GB minimum |
 
-The ColabFold + ESM-2 pieces are the only heavy dependencies; everything else in `mamp-ml` is light Python + scipy.
+For users without a local GPU, the [Google Colab notebook](https://colab.research.google.com/github/DanielleMStevens/mamp-ml/blob/version2/mamp_ml_colab.ipynb) gives you a free T4 — the recommended path.
 
 ---
 
