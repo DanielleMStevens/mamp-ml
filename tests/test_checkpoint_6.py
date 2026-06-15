@@ -111,46 +111,22 @@ def test_predict_gates_on_missing_colabfold(
 
 
 def test_predict_uses_bundled_weights_by_default(
-    tmp_path: Path, example_xlsx: Path, monkeypatch
+    tmp_path: Path, example_xlsx: Path
 ) -> None:
-    """When --checkpoint is omitted, predict resolves to the bundled file.
+    """When --weights is omitted, predict resolves to the bundled file.
 
-    We intercept ``mamp_ml.train.main`` so we don't actually load the model,
-    and assert that the eval-mode arglist was built with the bundled
-    checkpoint path."""
-    from mamp_ml.weights import default_weights_path
-
-    captured: dict = {}
-
-    def fake_train_main(args) -> None:
-        captured["model_checkpoint_path"] = args.model_checkpoint_path
-        captured["model"] = args.model
-        captured["device"] = args.device
-        captured["eval_only_data_path"] = args.eval_only_data_path
-        captured["disable_wandb"] = args.disable_wandb
-        # Simulate the model writing a predictions.csv into cwd, as the real
-        # one does.
-        Path("predictions.csv").write_text("Header_Name,prediction\n")
-
-    monkeypatch.setattr("mamp_ml.train.main", fake_train_main)
-
-    # Set up a minimal in-tmp pipeline state so prepare succeeds (we stage
-    # tiny fake files for every stage's expected output so _run_prepare
-    # short-circuits past the ColabFold gate; in this test we only care
-    # about the eventual predict-args wiring).
-    #
-    # We can't avoid running prepare without re-architecting _run_predict;
-    # instead we let prepare itself fail at stage 2 (no real PDBs) and
-    # detect that the gate fires. The bundled-weights check is exercised
-    # by `test_default_weights_path_returns_existing_file` above; the
-    # `--checkpoint` default resolution is checked by parser inspection:
+    The CLI parser leaves ``parsed.weights`` as ``None`` when the user
+    didn't pass a custom path; the runtime then substitutes the bundled
+    ``mamp_ml_weights.pth`` via
+    :func:`mamp_ml.weights.default_weights_path`. We verify both halves of
+    that contract here without actually loading the (heavy) ESM-2 model.
+    """
     from mamp_ml.__main__ import _build_parser
+    from mamp_ml.weights import default_weights_path
 
     parser = _build_parser()
     parsed = parser.parse_args(["predict", str(example_xlsx)])
-    # By default the parser leaves --checkpoint as None; _run_predict
-    # resolves it to default_weights_path() at runtime.
-    assert parsed.checkpoint is None
+    assert parsed.weights is None
     assert default_weights_path().is_file()
 
 

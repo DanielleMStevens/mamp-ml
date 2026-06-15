@@ -64,9 +64,35 @@ bash install_software.sh
 ```bash
 mamp-ml predict your_input.xlsx --device cuda    # GPU
 mamp-ml predict your_input.xlsx --device cpu     # CPU (slower)
+
+# use ESMFold instead of ColabFold (no separate conda env needed):
+mamp-ml predict your_input.xlsx --structure esmfold --device cuda
+
+# use a custom-trained model checkpoint instead of the bundled one:
+mamp-ml predict your_input.xlsx --weights /path/to/my_finetune.pth
 ```
 
-Output: `intermediate_files/predictions.csv`.
+Outputs land under `intermediate_files/`:
+
+| File | What it is |
+|---|---|
+| `predictions.csv` | per-row immunogenicity-class probabilities |
+| `lrr_annotation_plots/` | per-receptor LRR regression plots (PNG) |
+| `ready_test_data.csv` | model-ready input (post chemical features) |
+| `lrr_annotation_results.txt`, `lrr_domain_sequences.fasta`, `alphafold_scores.txt`, `bfactor_winding_lrr_segments.csv`, `test_data.csv` | other intermediates |
+
+### Folding backends
+
+| Backend | Pros | Cons |
+|---|---|---|
+| **`--structure colabfold`** (default) | Higher-accuracy folds (with MSA). Production-tested. | Requires a separate ColabFold install (heavy: ~5 GB env + 3.6 GB params). Needs CUDA for fast wall-clock. |
+| **`--structure esmfold`** | Runs in-process — no separate env. Faster than ColabFold (single-sequence, no MSA fetch). Good on Apple Silicon (MPS) or modest GPUs. | ESM-2-family model — slightly less accurate folds, especially in low-confidence regions. Hard limit of 1024 AAs per sequence (longer ones are truncated from the N-terminus, which preserves the LRR ectodomain). 7 GB one-time HuggingFace download. |
+
+Install ESMFold support:
+
+```bash
+pip install mamp-ml[esmfold]
+```
 
 ---
 
@@ -122,6 +148,7 @@ Each pipeline stage is exposed as its own subcommand for debugging or partial re
 
 ```bash
 mamp-ml prepare-fasta INPUT.xlsx out.fasta
+mamp-ml fold receptor.fasta out_dir --structure esmfold      # standalone fold
 mamp-ml structure-stage COLABFOLD_DIR scores.txt PDB_DIR lrr.txt
 mamp-ml lrr-domain-fasta lrr.txt receptor.fasta out.fasta
 mamp-ml bfactor PDB_DIR CACHE_DIR out.csv

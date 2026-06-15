@@ -129,6 +129,80 @@ def _build_parser() -> argparse.ArgumentParser:
         default="Sheet1",
         help="Sheet name to read from the workbook (default: Sheet1)",
     )
+    sp.add_argument(
+        "--structure",
+        default="colabfold",
+        choices=["colabfold", "esmfold"],
+        help=(
+            "Structure-prediction tool to use. `colabfold` (default) expects "
+            "the user to run colabfold_batch externally; the command exits "
+            "with a hint when the outputs aren't present. `esmfold` "
+            "auto-runs HuggingFace facebook/esmfold_v1 in-process "
+            "(requires `pip install mamp-ml[esmfold]`)."
+        ),
+    )
+    sp.add_argument(
+        "--device",
+        default=None,
+        help=(
+            "Torch device for in-process ESMFold (cpu / cuda / mps). "
+            "Defaults to cuda if available else cpu. Ignored for the "
+            "colabfold structure tool."
+        ),
+    )
+
+    # fold (standalone folding step) --------------------------------------
+    sp = sub.add_parser(
+        "fold",
+        help="Fold receptor structures with the chosen structure tool.",
+        description=(
+            "Runs the structure-prediction tool on the receptor FASTA "
+            "without touching the downstream pipeline. Useful for users who "
+            "want to inspect / replace structures before running prediction. "
+            "For `--structure colabfold`, prints the colabfold_batch "
+            "invocation to run (we don't auto-shell-out to it). For "
+            "`--structure esmfold`, runs facebook/esmfold_v1 in-process."
+        ),
+    )
+    sp.add_argument(
+        "fasta",
+        help=(
+            "Receptor FASTA produced by `mamp-ml prepare-fasta` "
+            "(intermediate_files/receptor_full_length.fasta by default)."
+        ),
+    )
+    sp.add_argument(
+        "output_dir",
+        help=(
+            "Where to write the folded PDBs + log.txt "
+            "(intermediate_files/receptor_only by convention)."
+        ),
+    )
+    sp.add_argument(
+        "--structure",
+        default="esmfold",
+        choices=["colabfold", "esmfold"],
+        help=(
+            "Structure-prediction tool; `esmfold` (default for the fold "
+            "subcommand) runs in-process, `colabfold` prints the "
+            "colabfold_batch invocation to run externally."
+        ),
+    )
+    sp.add_argument(
+        "--device",
+        default=None,
+        help="Torch device (cpu / cuda / mps); only relevant for esmfold.",
+    )
+    sp.add_argument(
+        "--max-length",
+        type=int,
+        default=1024,
+        help=(
+            "Truncate input sequences to this many residues (ESMFold has a "
+            "1024-AA positional-embedding cap; the LRR ectodomain is "
+            "N-terminal so the truncation preserves it)."
+        ),
+    )
 
     # predict (one-shot top-level, end-to-end including model inference) ---
     sp = sub.add_parser(
@@ -171,11 +245,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Override for the bfactor-stage breakpoints cache directory.",
     )
     sp.add_argument(
-        "--checkpoint",
+        "--weights",
         default=None,
         help=(
-            "Path to the model checkpoint .pth file. Defaults to the "
-            "bundled mamp_ml_weights.pth shipped inside the package."
+            "Path to a custom model weights file (.pth). Defaults to the "
+            "bundled mamp_ml_weights.pth shipped inside the package; "
+            "override with a path to your own trained checkpoint to "
+            "predict against an alternative model."
         ),
     )
     sp.add_argument(
@@ -183,13 +259,24 @@ def _build_parser() -> argparse.ArgumentParser:
         default="cpu",
         help=(
             "Torch device to run inference on (default: cpu). "
-            "Pass 'cuda' on a GPU host for ~50-100x speedup."
+            "Pass 'cuda' on a GPU host for ~50-100x speedup. "
+            "Also used for ESMFold folding when --structure esmfold is selected."
         ),
     )
     sp.add_argument(
         "--sheet-name",
         default="Sheet1",
         help="Sheet name to read from the workbook (default: Sheet1)",
+    )
+    sp.add_argument(
+        "--structure",
+        default="colabfold",
+        choices=["colabfold", "esmfold"],
+        help=(
+            "Structure-prediction tool (default: colabfold). Set to "
+            "`esmfold` to auto-run facebook/esmfold_v1 in-process instead "
+            "of waiting for colabfold_batch outputs."
+        ),
     )
 
     # prepare-fasta -----------------------------------------------------
@@ -355,27 +442,46 @@ def _run_prepare(args) -> int:
     )
     print(f"[1/6] receptor FASTA: wrote {n} unique records -> {receptor_fasta}")
 
-    # ---- ColabFold gate ----
+    # ---- Folding gate ----
+    # Both tools end up writing into the same colabfold_dir (the same PDB
+    # filename convention + log.txt schema), so the gating logic only
+    # differs in *what to do when the outputs are missing*: for colabfold we
+    # print a hint and exit, for esmfold we auto-run the in-process tool.
     log_path = colabfold_dir / "log.txt"
+    structure_tool = getattr(args, "structure", "colabfold")
     if not log_path.is_file():
-        print()
-        print("ColabFold has not been run yet for this input.")
-        print(
-            "Run ColabFold on the receptor FASTA above, then re-invoke "
-            "this command. Suggested invocation:"
-        )
-        print()
-        print(
-            f"  colabfold_batch --num-models 1 --num-recycle 1 \\\n"
-            f"      {receptor_fasta} \\\n"
-            f"      {colabfold_dir}"
-        )
-        print()
-        print(
-            "(See scripts/install_colabbatch_linux.sh or "
-            "scripts/install_colabbatch_mac.sh to install ColabFold locally.)"
-        )
-        return 2
+        if structure_tool == "esmfold":
+            print()
+            print(
+                f"Folding {receptor_fasta} with ESMFold (in-process) ..."
+            )
+            device = _resolve_torch_device(getattr(args, "device", None))
+            from mamp_ml.fold.esmfold import fold_with_esmfold
+
+            pdbs = fold_with_esmfold(
+                receptor_fasta, colabfold_dir, device=device
+            )
+            print(f"   wrote {len(pdbs)} PDB(s) + log.txt to {colabfold_dir}")
+        else:
+            print()
+            print("ColabFold has not been run yet for this input.")
+            print(
+                "Run ColabFold on the receptor FASTA above, then re-invoke "
+                "this command. Suggested invocation:"
+            )
+            print()
+            print(
+                f"  colabfold_batch --num-models 1 --num-recycle 1 \\\n"
+                f"      {receptor_fasta} \\\n"
+                f"      {colabfold_dir}"
+            )
+            print()
+            print(
+                "(See scripts/install_colabbatch_linux.sh or "
+                "scripts/install_colabbatch_mac.sh to install ColabFold "
+                "locally, or pass --structure esmfold to fold in-process.)"
+            )
+            return 2
 
     # ---- Stage 2/6 ----
     n_lrr = run_structure_stage(
@@ -422,7 +528,10 @@ def _run_prepare(args) -> int:
     )
 
     print()
-    print(f"Preparation complete. Final output: {ready_csv}")
+    print("Preparation complete.")
+    print("  Model-ready CSV     : {}".format(ready_csv))
+    print("  LRR annotation plots: {}/".format(plot_dir))
+    print("  All intermediates   : {}/".format(out_dir))
     return 0
 
 
@@ -462,12 +571,12 @@ def _run_predict(args) -> int:
 
     out_dir = Path(args.out_dir)
     ready_csv = out_dir / "ready_test_data.csv"
-    checkpoint = Path(args.checkpoint) if args.checkpoint else default_weights_path()
-    if not checkpoint.is_file():
+    weights = Path(args.weights) if args.weights else default_weights_path()
+    if not weights.is_file():
         print(
-            f"Error: model checkpoint not found at {checkpoint}. "
-            "Pass --checkpoint with an explicit path, or reinstall the "
-            "package to restore the bundled weights.",
+            f"Error: model weights not found at {weights}. "
+            "Pass --weights with an explicit path to a custom .pth file, or "
+            "reinstall the package to restore the bundled weights.",
         )
         return 3
     if not ready_csv.is_file():
@@ -481,7 +590,7 @@ def _run_predict(args) -> int:
     eval_argv = [
         "--model", "esm2_bfactor_weighted",
         "--eval_only_data_path", str(ready_csv.resolve()),
-        "--model_checkpoint_path", str(checkpoint.resolve()),
+        "--model_checkpoint_path", str(weights.resolve()),
         "--device", args.device,
         "--disable_wandb",
     ]
@@ -506,9 +615,83 @@ def _run_predict(args) -> int:
     finally:
         os.chdir(prev_cwd)
 
+    predictions_csv = out_dir / "predictions.csv"
     print()
-    print(f"Predictions written to {out_dir / 'predictions.csv'}")
+    print("Prediction complete.")
+    print("  Predictions         : {}".format(predictions_csv))
+    print("  LRR annotation plots: {}/".format(out_dir / "lrr_annotation_plots"))
+    print("  Model-ready CSV     : {}".format(ready_csv))
+    print("  All intermediates   : {}/".format(out_dir))
     return 0
+
+
+def _resolve_torch_device(device_arg: Optional[str]) -> str:
+    """Pick a torch device for ESMFold given the user's --device hint.
+
+    If the user passed something explicit, use it as-is. Otherwise prefer
+    cuda > mps > cpu so users on a GPU host or an Apple Silicon laptop get
+    the fast path automatically.
+    """
+    if device_arg:
+        return device_arg
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            return "cuda"
+        if (
+            hasattr(torch.backends, "mps")
+            and torch.backends.mps.is_available()  # type: ignore[attr-defined]
+        ):
+            return "mps"
+    except ImportError:
+        pass
+    return "cpu"
+
+
+def _run_fold(args) -> int:
+    """Implementation of ``python -m mamp_ml fold``.
+
+    Standalone wrapper around either the ESMFold backend or a ColabFold
+    invocation hint. Useful when the user wants to fold a custom FASTA
+    without running the rest of the preparation pipeline.
+    """
+    from pathlib import Path
+
+    fasta = Path(args.fasta)
+    output_dir = Path(args.output_dir)
+
+    if not fasta.is_file():
+        print(f"Error: input FASTA not found: {fasta}")
+        return 3
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.structure == "esmfold":
+        from mamp_ml.fold.esmfold import fold_with_esmfold
+
+        device = _resolve_torch_device(args.device)
+        print(f"Folding {fasta} with ESMFold on device='{device}' ...")
+        pdbs = fold_with_esmfold(
+            fasta, output_dir, device=device, max_length=args.max_length
+        )
+        print(
+            f"Wrote {len(pdbs)} PDB(s) + log.txt to {output_dir}/"
+        )
+        return 0
+
+    # colabfold path: print the recommended invocation.
+    print(
+        "To fold with ColabFold, run the command below in an environment "
+        "where colabfold_batch is on $PATH:"
+    )
+    print()
+    print(
+        f"  colabfold_batch --num-models 1 --num-recycle 1 \\\n"
+        f"      {fasta} \\\n"
+        f"      {output_dir}"
+    )
+    return 2
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -525,6 +708,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.cmd == "predict":
         return _run_predict(args)
+
+    if args.cmd == "fold":
+        return _run_fold(args)
 
     if args.cmd == "prepare-fasta":
         from mamp_ml.preprocess import xlsx_to_receptor_fasta
