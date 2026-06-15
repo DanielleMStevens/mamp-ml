@@ -34,8 +34,9 @@ Stability notes
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
-from typing import Dict, Mapping, Union
+from typing import Dict, List, Mapping, Tuple, Union
 
 import pandas as pd
 
@@ -48,6 +49,7 @@ __all__ = [
     "HYDROPHOBICITY",
     "read_receptor_xlsx",
     "xlsx_to_receptor_fasta",
+    "build_lrr_domain_fasta",
     "sequence_to_property",
     "sequence_to_bulkiness",
     "sequence_to_charge",
@@ -357,3 +359,246 @@ def add_chemical_features(
     output_csv.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(output_csv, index=False)
     return df
+
+
+# =============================================================================
+# Section 3 :: LRR-annotation results  +  receptor FASTA  ->  LRR-domain FASTA
+# Replaces scripts/03_parse_lrr_annotation.py
+# =============================================================================
+#
+# After the structure-analysis stage emits ``lrr_annotation_results.txt`` (one
+# row per detected LRR region, keyed on the source PDB filename), this section
+# joins those rows back to the receptor full-length FASTA so the LRR-domain
+# sequence can be re-headered with the canonical ``species|locus|receptor``
+# identifier and consumed by the downstream data-prep step.
+#
+# The matching is necessary because the PDB filename uses underscores in
+# place of both spaces and pipes (it has to: many filesystems disallow ``|``
+# and tools may split on whitespace), while the FASTA header is canonical and
+# uses both characters. So the join key is the *common normalised form*
+# (everything replaced with underscores), built fresh from both sides.
+
+
+def _normalize_pdb_lookup_key(text: str) -> str:
+    """Reduce a receptor identifier to its PDB-filename-stem normalisation.
+
+    The receptor full-length FASTA uses headers like
+    ``Solanum habrochates|scaffold11|CORE`` (space + pipes); the PDB files
+    written by the structure-analysis stage replace both separators with
+    underscores, yielding ``Solanum_habrochates_scaffold11_CORE``. This
+    helper applies the same normalisation to either side so a header can
+    be looked up by its PDB stem.
+
+    Parameters
+    ----------
+    text
+        Either a FASTA header (without the leading ``>``) or a PDB
+        filename stem (without the trailing ``.pdb``).
+
+    Returns
+    -------
+    str
+        Underscore-joined normalised form.
+    """
+    return text.replace(" ", "_").replace("|", "_")
+
+
+def _read_fasta_records(fasta_path: Path) -> List[Tuple[str, str]]:
+    """Parse a FASTA file into a list of ``(header, sequence)`` tuples.
+
+    Headers are returned WITHOUT the leading ``>``. Multi-line sequences
+    are concatenated. Blank lines and Windows-style ``\\r`` line endings
+    are tolerated. The original record order is preserved.
+
+    Parameters
+    ----------
+    fasta_path
+        Path to a FASTA file on disk.
+
+    Returns
+    -------
+    list of (str, str)
+        ``(header, sequence)`` for each record in the file.
+    """
+    records: List[Tuple[str, str]] = []
+    header: Union[str, None] = None
+    seq_chunks: List[str] = []
+    with open(fasta_path, encoding="utf-8") as fh:
+        for raw in fh:
+            # Strip both LF and any CR so the parser is robust to CRLF inputs.
+            line = raw.rstrip("\n").rstrip("\r")
+            if not line:
+                continue
+            if line.startswith(">"):
+                if header is not None:
+                    records.append((header, "".join(seq_chunks)))
+                header = line[1:]
+                seq_chunks = []
+            else:
+                seq_chunks.append(line)
+        if header is not None:
+            records.append((header, "".join(seq_chunks)))
+    return records
+
+
+# Column indices in the LRR-annotation TSV emitted by the structure-analysis
+# stage (matches the header line written by scripts/02_alphafold_to_lrr_annotation.py
+# and the upcoming mamp_ml.structure module).
+_LRR_RESULT_PDB_FILENAME_COL = 0
+_LRR_RESULT_SEQUENCE_COL = 7
+
+
+def _read_lrr_annotation_results(
+    results_path: Path,
+) -> List[Tuple[str, str]]:
+    """Parse the LRR-annotation TSV into ``(pdb_stem, lrr_sequence)`` rows.
+
+    The PDB filename column carries the trailing ``.pdb`` extension; we
+    strip it here so the caller can use the bare stem as a lookup key. The
+    header row is validated to catch the case where this function is
+    pointed at the wrong file by mistake.
+
+    Parameters
+    ----------
+    results_path
+        Path to the tab-separated annotation file (header row plus one row
+        per detected LRR region).
+
+    Returns
+    -------
+    list of (str, str)
+        ``(pdb_filename_stem, lrr_sequence)`` per row, in file order.
+
+    Raises
+    ------
+    ValueError
+        If the header row is not the expected ``PDB_Filename\\t…`` line.
+    """
+    records: List[Tuple[str, str]] = []
+    with open(results_path, encoding="utf-8") as fh:
+        header_line = fh.readline()
+        if not header_line.startswith("PDB_Filename"):
+            raise ValueError(
+                f"Unexpected header in LRR-annotation results {results_path}: "
+                f"{header_line.rstrip()!r}"
+            )
+        for raw in fh:
+            line = raw.rstrip("\n").rstrip("\r")
+            if not line:
+                continue
+            cols = line.split("\t")
+            if len(cols) <= _LRR_RESULT_SEQUENCE_COL:
+                warnings.warn(
+                    f"Skipping malformed LRR-annotation row in {results_path}: "
+                    f"{line!r}",
+                    stacklevel=2,
+                )
+                continue
+            pdb_filename = cols[_LRR_RESULT_PDB_FILENAME_COL]
+            lrr_sequence = cols[_LRR_RESULT_SEQUENCE_COL]
+            stem = (
+                pdb_filename[:-4]
+                if pdb_filename.endswith(".pdb")
+                else pdb_filename
+            )
+            records.append((stem, lrr_sequence))
+    return records
+
+
+def build_lrr_domain_fasta(
+    lrr_annotation_results: PathLike,
+    receptor_full_length_fasta: PathLike,
+    output_fasta: PathLike,
+) -> int:
+    """Join LRR-annotation rows with receptor headers into an LRR-domain FASTA.
+
+    Python replacement for ``scripts/03_parse_lrr_annotation.py``. Reads the
+    LRR-annotation TSV (which references receptors by their PDB filename stem)
+    and matches each row to the canonical FASTA header from the receptor
+    full-length file. Output headers preserve the original pipe-separated
+    form, replace any spaces in ``plant_species`` with underscores so that
+    whitespace-tokenising downstream tools see a single identifier, and
+    append a ``|LRR_domain`` suffix to mark the sequence as a region extract.
+
+    Records whose PDB stem cannot be matched to any receptor header are
+    skipped with a warning. This is the common case when the structure stage
+    failed to produce a PDB for one of the input receptors (e.g. a folding
+    job was cancelled or the model crashed for one query).
+
+    Parameters
+    ----------
+    lrr_annotation_results
+        Path to the tab-separated LRR-annotation file
+        (``intermediate_files/lrr_annotation_results.txt`` in the legacy
+        layout). Column 0 holds the PDB filename, column 7 holds the LRR
+        sequence; columns 1-6 are positional metadata and are ignored here.
+    receptor_full_length_fasta
+        Path to the receptor full-length FASTA produced by
+        :func:`xlsx_to_receptor_fasta`. The headers in this file form the
+        canonical identifiers re-attached to each LRR region in the output.
+    output_fasta
+        Where to write the LRR-domain FASTA. Parent directories are created
+        on demand. The file uses unconditional LF (``\\n``) line endings.
+
+    Returns
+    -------
+    int
+        Number of records written to ``output_fasta``.
+
+    Raises
+    ------
+    FileNotFoundError
+        If either input path does not exist.
+    ValueError
+        If the LRR-annotation file has an unexpected header row.
+    """
+    lrr_annotation_results = Path(lrr_annotation_results)
+    receptor_full_length_fasta = Path(receptor_full_length_fasta)
+    output_fasta = Path(output_fasta)
+
+    if not lrr_annotation_results.is_file():
+        raise FileNotFoundError(
+            f"LRR annotation file not found: {lrr_annotation_results}"
+        )
+    if not receptor_full_length_fasta.is_file():
+        raise FileNotFoundError(
+            f"Receptor FASTA not found: {receptor_full_length_fasta}"
+        )
+
+    # Build the PDB-stem -> (original_header, sequence) lookup. The receptor
+    # FASTA carries headers in canonical form (with spaces and pipes); the
+    # normalisation maps them to the same form used to derive PDB filenames,
+    # so a PDB stem from the annotation file can find its parent record.
+    fasta_records = _read_fasta_records(receptor_full_length_fasta)
+    lookup: Dict[str, Tuple[str, str]] = {
+        _normalize_pdb_lookup_key(header): (header, sequence)
+        for header, sequence in fasta_records
+    }
+
+    annotation_rows = _read_lrr_annotation_results(lrr_annotation_results)
+
+    output_fasta.parent.mkdir(parents=True, exist_ok=True)
+    n_written = 0
+    with open(output_fasta, "w", newline="\n", encoding="utf-8") as fh:
+        for pdb_stem, lrr_sequence in annotation_rows:
+            key = _normalize_pdb_lookup_key(pdb_stem)
+            match = lookup.get(key)
+            if match is None:
+                # Surface as a runtime warning rather than a hard error so a
+                # partial structure-stage run (e.g. one of two receptors
+                # folded) still produces usable downstream data for the
+                # receptors that succeeded.
+                warnings.warn(
+                    "No matching receptor header found for PDB "
+                    f"'{pdb_stem}.pdb' (normalised key '{key}'); skipping.",
+                    stacklevel=2,
+                )
+                continue
+            original_header, _ = match
+            # Replace only spaces (not pipes) so the header stays a single
+            # whitespace-delimited token, then append the LRR-domain tag.
+            output_header = original_header.replace(" ", "_") + "|LRR_domain"
+            fh.write(f">{output_header}\n{lrr_sequence}\n")
+            n_written += 1
+
+    return n_written
