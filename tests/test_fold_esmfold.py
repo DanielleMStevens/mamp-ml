@@ -322,6 +322,82 @@ def test_predict_subparser_accepts_weights_flag(
     assert parsed_default.weights is None
 
 
+def test_predict_subparser_accepts_keep_flag(example_xlsx: Path) -> None:
+    """The predict subcommand must accept --keep with choices {default, all}."""
+    from mamp_ml.__main__ import _build_parser
+
+    parser = _build_parser()
+    parsed_default = parser.parse_args(["predict", str(example_xlsx)])
+    assert parsed_default.keep == "default"
+
+    parsed_all = parser.parse_args(
+        ["predict", str(example_xlsx), "--keep", "all"]
+    )
+    assert parsed_all.keep == "all"
+
+    with pytest.raises(SystemExit):
+        # Anything other than {default, all} must reject.
+        parser.parse_args(["predict", str(example_xlsx), "--keep", "garbage"])
+
+
+def test_tidy_intermediate_files_removes_everything_but_keep(tmp_path: Path) -> None:
+    """The cleanup helper must preserve the listed keep paths and remove
+    everything else under out_dir without touching out_dir itself."""
+    from mamp_ml.__main__ import _tidy_intermediate_files
+
+    out_dir = tmp_path / "inter"
+    out_dir.mkdir()
+    # Files we want to keep.
+    preds = out_dir / "predictions.csv"
+    preds.write_text("Header_Name,prediction\n")
+    plots_dir = out_dir / "lrr_annotation_plots"
+    plots_dir.mkdir()
+    (plots_dir / "Solanum_plot.png").write_bytes(b"\x89PNG")
+    # Other intermediates that should be removed.
+    (out_dir / "test_data.csv").write_text("a,b\n")
+    (out_dir / "ready_test_data.csv").write_text("a,b\n")
+    (out_dir / "receptor_only").mkdir()
+    (out_dir / "receptor_only" / "log.txt").write_text("...")
+    (out_dir / "pdb_for_lrr_annotator").mkdir()
+    (out_dir / "pdb_for_lrr_annotator" / "Solanum.pdb").write_text("...")
+    (out_dir / "lrr_annotation_results.txt").write_text("...")
+
+    _tidy_intermediate_files(out_dir, keep=[preds, plots_dir])
+
+    # Survivors:
+    assert preds.is_file()
+    assert plots_dir.is_dir()
+    assert (plots_dir / "Solanum_plot.png").is_file()
+    assert out_dir.is_dir()  # the out_dir itself must NOT be removed
+
+    # Casualties:
+    assert not (out_dir / "test_data.csv").exists()
+    assert not (out_dir / "ready_test_data.csv").exists()
+    assert not (out_dir / "receptor_only").exists()
+    assert not (out_dir / "pdb_for_lrr_annotator").exists()
+    assert not (out_dir / "lrr_annotation_results.txt").exists()
+
+
+def test_tidy_intermediate_files_tolerates_missing_keep_paths(tmp_path: Path) -> None:
+    """If a keep target doesn't exist, the cleanup must still run cleanly
+    and remove the other files."""
+    from mamp_ml.__main__ import _tidy_intermediate_files
+
+    out_dir = tmp_path / "inter"
+    out_dir.mkdir()
+    (out_dir / "test_data.csv").write_text("a,b\n")
+
+    # predictions.csv intentionally absent.
+    nonexistent_preds = out_dir / "predictions.csv"
+    nonexistent_plots = out_dir / "lrr_annotation_plots"
+
+    _tidy_intermediate_files(out_dir, keep=[nonexistent_preds, nonexistent_plots])
+    # The casualty was removed even though the keep targets never existed.
+    assert not (out_dir / "test_data.csv").exists()
+    # out_dir survives.
+    assert out_dir.is_dir()
+
+
 def test_prepare_summary_mentions_plots_and_intermediates(
     tmp_path: Path,
     repo_root: Path,

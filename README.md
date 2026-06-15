@@ -39,22 +39,42 @@ pip install -e .
 
 The pretrained checkpoint (`mamp_ml_weights.pth`, ~33 MB) is bundled inside the wheel — no separate download.
 
-### 2. Install ColabFold (only for structure folding)
+### 2. Install a structure-prediction tool
 
-ColabFold is the only piece `mamp-ml` doesn't bundle, since it's GPU-specific and heavy.
+`mamp-ml` needs receptor structures to run its LRR-feature analysis. Pick one of two tools — both produce ColabFold-compatible output so the downstream pipeline is unchanged.
+
+#### Option A — ColabFold (default, higher-accuracy folds)
 
 ```bash
 # Linux + NVIDIA GPU (recommended)
 bash scripts/install_colabbatch_linux.sh
 ```
 
-No local GPU? Use the [Google Colab notebook](https://colab.research.google.com/github/DanielleMStevens/mamp-ml/blob/version2/mamp_ml_colab.ipynb) — it provisions a free T4 and runs the whole pipeline end-to-end.
-
 Or run everything (Python package + ColabFold) in one command via:
 
 ```bash
 bash install_software.sh
 ```
+
+#### Option B — ESMFold (in-process, no separate env)
+
+```bash
+pip install mamp-ml[esmfold]
+```
+
+That's it — ESMFold runs inside the same Python process as `mamp-ml`, no extra conda env or weights download dance. The HuggingFace `facebook/esmfold_v1` model (~7 GB) downloads automatically on first use.
+
+#### Comparison
+
+| | ColabFold (`--structure colabfold`) | ESMFold (`--structure esmfold`) |
+|---|---|---|
+| Accuracy | Higher (MSA-conditioned, production-tested) | Slightly lower in low-confidence regions |
+| Install cost | ~5 GB conda env + ~3.6 GB AF2 params + a separate install script | `pip install mamp-ml[esmfold]` |
+| Wall-clock per receptor | ~5 min on RTX 3070+ | ~2 min on RTX 3070+ |
+| Max sequence length | unlimited | 1024 AAs (longer truncates from N-terminus → preserves LRR ectodomain) |
+| Requires CUDA | yes (for tractable wall-clock) | yes (for tractable wall-clock); also works on Apple Silicon via MPS |
+
+No local GPU at all? Use the [Google Colab notebook](https://colab.research.google.com/github/DanielleMStevens/mamp-ml/blob/version2/mamp_ml_colab.ipynb) — it provisions a free T4 and runs the whole pipeline end-to-end with either tool.
 
 <details>
 <summary>macOS install (for package development, not for predictions)</summary>
@@ -70,34 +90,24 @@ A CUDA-capable GPU is required for reasonable wall-clock — ColabFold and ESM-2
 ```bash
 mamp-ml predict your_input.xlsx --device cuda
 
-# use ESMFold instead of ColabFold (no separate conda env needed):
+# use ESMFold instead of ColabFold:
 mamp-ml predict your_input.xlsx --structure esmfold --device cuda
 
 # use a custom-trained model checkpoint instead of the bundled one:
 mamp-ml predict your_input.xlsx --weights /path/to/my_finetune.pth
+
+# keep every intermediate file (default keeps only predictions.csv + LRR plots):
+mamp-ml predict your_input.xlsx --keep all
 ```
 
-Outputs land under `intermediate_files/`:
+By default the run leaves just the user-facing outputs on disk:
 
 | File | What it is |
 |---|---|
-| `predictions.csv` | per-row immunogenicity-class probabilities |
-| `lrr_annotation_plots/` | per-receptor LRR regression plots (PNG) |
-| `ready_test_data.csv` | model-ready input (post chemical features) |
-| `lrr_annotation_results.txt`, `lrr_domain_sequences.fasta`, `alphafold_scores.txt`, `bfactor_winding_lrr_segments.csv`, `test_data.csv` | other intermediates |
+| `intermediate_files/predictions.csv` | per-row immunogenicity-class probabilities |
+| `intermediate_files/lrr_annotation_plots/` | per-receptor LRR regression plots (PNG) |
 
-### Folding backends
-
-| Backend | Pros | Cons |
-|---|---|---|
-| **`--structure colabfold`** (default) | Higher-accuracy folds (with MSA). Production-tested. | Requires a separate ColabFold install (heavy: ~5 GB env + 3.6 GB params). Needs CUDA for fast wall-clock. |
-| **`--structure esmfold`** | Runs in-process — no separate env. Faster than ColabFold (single-sequence, no MSA fetch). Good on Apple Silicon (MPS) or modest GPUs. | ESM-2-family model — slightly less accurate folds, especially in low-confidence regions. Hard limit of 1024 AAs per sequence (longer ones are truncated from the N-terminus, which preserves the LRR ectodomain). 7 GB one-time HuggingFace download. |
-
-Install ESMFold support:
-
-```bash
-pip install mamp-ml[esmfold]
-```
+Pass `--keep all` to retain everything in `intermediate_files/` (FASTAs, CSVs, intermediate text files, the copied ColabFold/ESMFold PDBs) — useful when you want to rerun prediction without re-folding.
 
 ---
 

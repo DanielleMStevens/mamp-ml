@@ -278,6 +278,19 @@ def _build_parser() -> argparse.ArgumentParser:
             "of waiting for colabfold_batch outputs."
         ),
     )
+    sp.add_argument(
+        "--keep",
+        default="default",
+        choices=["default", "all"],
+        help=(
+            "Which intermediate files to retain after a successful "
+            "prediction. The default keeps only the user-facing outputs — "
+            "predictions.csv and lrr_annotation_plots/ — under --out-dir. "
+            "Pass `all` to retain every file produced by the pipeline "
+            "(useful for debugging or for re-running prediction without "
+            "re-folding)."
+        ),
+    )
 
     # prepare-fasta -----------------------------------------------------
     sp = sub.add_parser(
@@ -616,13 +629,72 @@ def _run_predict(args) -> int:
         os.chdir(prev_cwd)
 
     predictions_csv = out_dir / "predictions.csv"
+    plots_dir = out_dir / "lrr_annotation_plots"
+
+    # --keep default: tidy up the intermediate artefacts so the user sees
+    # just the two outputs that actually matter for their downstream work.
+    # --keep all: leave everything in place (useful for debugging / for
+    # re-running prediction against a different ligand spreadsheet without
+    # having to re-fold).
+    keep_mode = getattr(args, "keep", "default")
+    if keep_mode == "default":
+        _tidy_intermediate_files(
+            out_dir,
+            keep=(predictions_csv, plots_dir),
+        )
+
     print()
     print("Prediction complete.")
     print("  Predictions         : {}".format(predictions_csv))
-    print("  LRR annotation plots: {}/".format(out_dir / "lrr_annotation_plots"))
-    print("  Model-ready CSV     : {}".format(ready_csv))
-    print("  All intermediates   : {}/".format(out_dir))
+    print("  LRR annotation plots: {}/".format(plots_dir))
+    if keep_mode == "all":
+        print("  Model-ready CSV     : {}".format(ready_csv))
+        print("  All intermediates   : {}/".format(out_dir))
+    else:
+        print(
+            "  (other intermediates removed; rerun with `--keep all` to retain them)"
+        )
     return 0
+
+
+def _tidy_intermediate_files(out_dir: "Path", *, keep) -> None:
+    """Delete every entry under ``out_dir`` that isn't in ``keep``.
+
+    The ``keep`` iterable lists files and/or directories that survive the
+    cleanup. Anything else inside ``out_dir`` (other files, other
+    directories) is removed. The ``out_dir`` itself is preserved. Missing
+    entries in ``keep`` are tolerated silently — this function is called
+    after a successful prediction, where the keep targets normally exist,
+    but we don't want a missing predictions.csv (e.g. the model failed to
+    write it for some reason) to cascade into a hard error from the
+    tidy-up step.
+    """
+    import shutil
+    from pathlib import Path
+
+    keep_resolved = set()
+    for entry in keep:
+        try:
+            keep_resolved.add(Path(entry).resolve())
+        except (OSError, RuntimeError):
+            # Resolving a non-existent path can fail on some platforms;
+            # treat as "nothing to keep here" and continue.
+            continue
+
+    for child in out_dir.iterdir():
+        try:
+            child_resolved = child.resolve()
+        except (OSError, RuntimeError):
+            continue
+        if child_resolved in keep_resolved:
+            continue
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child, ignore_errors=True)
+        else:
+            try:
+                child.unlink()
+            except OSError:
+                pass
 
 
 def _resolve_torch_device(device_arg: Optional[str]) -> str:
