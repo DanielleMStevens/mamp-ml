@@ -68,7 +68,7 @@ dependencies = [
     # Data + I/O
     "pandas>=1.5,<3",
     "numpy>=1.23,<2",                # numpy 2.0 broke many scientific deps; revisit after validation
-    "openpyxl>=3.0",                 # xlsx engine for pandas.read_excel
+    "openpyxl>=3.1.0",               # xlsx engine for pandas.read_excel; pandas 2.x raises ImportError otherwise
     # Numeric + scientific
     "scipy>=1.10,<2",
     "scikit-learn>=1.0,<2",

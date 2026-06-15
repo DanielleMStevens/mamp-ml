@@ -36,6 +36,22 @@ def test_example_xlsx_exists(example_xlsx: Path) -> None:
     assert example_xlsx.suffix == ".xlsx"
 
 
+def test_openpyxl_min_version_keeps_pandas_happy(repo_root: Path) -> None:
+    """Pandas 2.x raises ``ImportError`` when openpyxl is < 3.1.0, which
+    breaks ``mamp-ml predict`` at the first call to ``read_excel``. Both
+    pyproject.toml and environment.yml must pin >= 3.1.0 so a fresh
+    install always lands on a usable openpyxl. Reported by D. Stevens
+    from a cluster install with openpyxl 3.0.10."""
+    pyproject = (repo_root / "pyproject.toml").read_text()
+    assert "openpyxl>=3.1" in pyproject, (
+        "pyproject.toml must pin openpyxl >= 3.1.0 (pandas 2.x requirement)"
+    )
+    env_yml = (repo_root / "environment.yml").read_text()
+    assert "openpyxl>=3.1" in env_yml, (
+        "environment.yml must pin openpyxl >= 3.1.0 (pandas 2.x requirement)"
+    )
+
+
 def test_lrr_annotation_cache_present(repo_root: Path) -> None:
     """The pre-computed LRR-Annotation cache backs the post-fold golden tests."""
     cache = repo_root / "src" / "mamp_ml" / "lrr_annotation" / "cache"
