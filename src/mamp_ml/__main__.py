@@ -444,12 +444,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default="default",
         choices=["default", "all"],
         help=(
-            "Which intermediate files to retain after a successful "
-            "prediction. The default keeps only the user-facing outputs — "
-            "predictions.csv and lrr_annotation_plots/ — under --out-dir. "
-            "Pass `all` to retain every file produced by the pipeline "
-            "(useful for debugging or for re-running prediction without "
-            "re-folding)."
+            "What to keep after a successful prediction. The default promotes "
+            "the two outputs — predictions.csv and lrr_annotation_plots/ — into "
+            "the current directory and removes the intermediate_files/ scratch "
+            "dir. Pass `all` to leave every file produced by the pipeline in "
+            "--out-dir instead (useful for debugging or for re-running "
+            "prediction without re-folding)."
         ),
     )
 
@@ -907,6 +907,10 @@ def _run_predict(args) -> int:
     """
     from pathlib import Path
 
+    # The directory the user invoked from — where the final deliverables land
+    # under the default --keep mode (captured before any chdir).
+    invocation_dir = Path.cwd()
+
     # Resolve the input spreadsheet: --example swaps in the bundled sample so
     # pip users can smoke-test their install with no data of their own. A bare
     # `predict` with neither a path nor --example is a usage error.
@@ -1018,71 +1022,78 @@ def _run_predict(args) -> int:
     plots_dir = out_dir / "lrr_annotation_plots"
     infer.done(f"{_count_csv_rows(predictions_csv)} prediction(s)", target=predictions_csv)
 
-    # --keep default: tidy up the intermediate artefacts so the user sees
-    # just the two outputs that actually matter for their downstream work.
-    # --keep all: leave everything in place (useful for debugging / for
-    # re-running prediction against a different ligand spreadsheet without
-    # having to re-fold).
+    # --keep default: the two real deliverables (predictions.csv + the LRR
+    # plots) are promoted to the invocation directory and the whole
+    # intermediate_files/ scratch dir is removed, so the user's outputs aren't
+    # buried under a folder named "intermediate_files".
+    # --keep all: leave everything in out_dir untouched (useful for debugging
+    # or re-running prediction on a different ligand sheet without re-folding).
     keep_mode = getattr(args, "keep", "default")
-    if keep_mode == "default":
-        _tidy_intermediate_files(
-            out_dir,
-            keep=(predictions_csv, plots_dir),
-        )
-
-    outputs = [
-        ("Predictions", predictions_csv),
-        ("LRR annotation plots", f"{plots_dir}/"),
-    ]
     if keep_mode == "all":
-        outputs.append(("Model-ready CSV", ready_csv))
-        outputs.append(("All intermediates", f"{out_dir}/"))
+        outputs = [
+            ("Predictions", predictions_csv),
+            ("LRR annotation plots", f"{plots_dir}/"),
+            ("Model-ready CSV", ready_csv),
+            ("All intermediates", f"{out_dir}/"),
+        ]
     else:
-        outputs.append(
-            ("(other intermediates removed", "rerun with `--keep all` to retain them)")
+        final_predictions = _promote_output(
+            predictions_csv, invocation_dir / "predictions.csv"
         )
+        final_plots = _promote_output(
+            plots_dir, invocation_dir / "lrr_annotation_plots"
+        )
+        # Remove the scratch dir now that the deliverables are out of it —
+        # unless the user pointed --out-dir at the invocation dir itself.
+        if out_dir.resolve() != invocation_dir.resolve():
+            import shutil
+
+            shutil.rmtree(out_dir, ignore_errors=True)
+        outputs = [
+            ("Predictions", final_predictions or predictions_csv),
+            ("LRR annotation plots", f"{final_plots or plots_dir}/"),
+            ("(intermediates removed", "rerun with `--keep all` to retain them)"),
+        ]
     progress.complete("Prediction complete", outputs=outputs)
     return 0
 
 
-def _tidy_intermediate_files(out_dir: "Path", *, keep) -> None:
-    """Delete every entry under ``out_dir`` that isn't in ``keep``.
+def _promote_output(src: "Path", dest: "Path") -> "Path | None":
+    """Move a final deliverable ``src`` to ``dest``, replacing ``dest`` if present.
 
-    The ``keep`` iterable lists files and/or directories that survive the
-    cleanup. Anything else inside ``out_dir`` (other files, other
-    directories) is removed. The ``out_dir`` itself is preserved. Missing
-    entries in ``keep`` are tolerated silently — this function is called
-    after a successful prediction, where the keep targets normally exist,
-    but we don't want a missing predictions.csv (e.g. the model failed to
-    write it for some reason) to cascade into a hard error from the
-    tidy-up step.
+    Used to lift ``predictions.csv`` and the ``lrr_annotation_plots/`` dir out
+    of the scratch ``intermediate_files/`` directory and into the directory the
+    user invoked from, so the real outputs aren't buried under a folder named
+    "intermediate_files".
+
+    Returns the destination path on success, the source path if it is already
+    at the destination, or ``None`` if ``src`` doesn't exist (e.g. the model
+    didn't write predictions for some reason — we don't want the relocation to
+    hard-fail in that case).
     """
     import shutil
     from pathlib import Path
 
-    keep_resolved = set()
-    for entry in keep:
-        try:
-            keep_resolved.add(Path(entry).resolve())
-        except (OSError, RuntimeError):
-            # Resolving a non-existent path can fail on some platforms;
-            # treat as "nothing to keep here" and continue.
-            continue
-
-    for child in out_dir.iterdir():
-        try:
-            child_resolved = child.resolve()
-        except (OSError, RuntimeError):
-            continue
-        if child_resolved in keep_resolved:
-            continue
-        if child.is_dir() and not child.is_symlink():
-            shutil.rmtree(child, ignore_errors=True)
+    src = Path(src)
+    dest = Path(dest)
+    if not src.exists():
+        return None
+    try:
+        if src.resolve() == dest.resolve():
+            return src  # already in place (e.g. --out-dir is the invocation dir)
+    except (OSError, RuntimeError):
+        pass
+    if dest.exists():
+        if dest.is_dir() and not dest.is_symlink():
+            shutil.rmtree(dest, ignore_errors=True)
         else:
             try:
-                child.unlink()
+                dest.unlink()
             except OSError:
                 pass
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(src), str(dest))
+    return dest
 
 
 def _resolve_torch_device(device_arg: Optional[str]) -> str:

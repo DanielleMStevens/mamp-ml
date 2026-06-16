@@ -1016,62 +1016,57 @@ def test_predict_subparser_accepts_keep_flag(example_xlsx: Path) -> None:
         parser.parse_args(["predict", str(example_xlsx), "--keep", "garbage"])
 
 
-def test_tidy_intermediate_files_removes_everything_but_keep(tmp_path: Path) -> None:
-    """The cleanup helper must preserve the listed keep paths and remove
-    everything else under out_dir without touching out_dir itself."""
-    from mamp_ml.__main__ import _tidy_intermediate_files
+def test_promote_output_moves_file_to_destination(tmp_path: Path) -> None:
+    """_promote_output lifts a deliverable out of the scratch dir to the dest."""
+    from mamp_ml.__main__ import _promote_output
 
     out_dir = tmp_path / "inter"
     out_dir.mkdir()
-    # Files we want to keep.
-    preds = out_dir / "predictions.csv"
-    preds.write_text("Header_Name,prediction\n")
-    plots_dir = out_dir / "lrr_annotation_plots"
-    plots_dir.mkdir()
-    (plots_dir / "Solanum_plot.png").write_bytes(b"\x89PNG")
-    # Other intermediates that should be removed.
-    (out_dir / "test_data.csv").write_text("a,b\n")
-    (out_dir / "ready_test_data.csv").write_text("a,b\n")
-    (out_dir / "receptor_only").mkdir()
-    (out_dir / "receptor_only" / "log.txt").write_text("...")
-    (out_dir / "pdb_for_lrr_annotator").mkdir()
-    (out_dir / "pdb_for_lrr_annotator" / "Solanum.pdb").write_text("...")
-    (out_dir / "lrr_annotation_results.txt").write_text("...")
+    src = out_dir / "predictions.csv"
+    src.write_text("Header_Name,prediction\n")
+    dest = tmp_path / "predictions.csv"
 
-    _tidy_intermediate_files(out_dir, keep=[preds, plots_dir])
-
-    # Survivors:
-    assert preds.is_file()
-    assert plots_dir.is_dir()
-    assert (plots_dir / "Solanum_plot.png").is_file()
-    assert out_dir.is_dir()  # the out_dir itself must NOT be removed
-
-    # Casualties:
-    assert not (out_dir / "test_data.csv").exists()
-    assert not (out_dir / "ready_test_data.csv").exists()
-    assert not (out_dir / "receptor_only").exists()
-    assert not (out_dir / "pdb_for_lrr_annotator").exists()
-    assert not (out_dir / "lrr_annotation_results.txt").exists()
+    returned = _promote_output(src, dest)
+    assert returned == dest
+    assert dest.is_file()
+    assert not src.exists()  # moved, not copied
 
 
-def test_tidy_intermediate_files_tolerates_missing_keep_paths(tmp_path: Path) -> None:
-    """If a keep target doesn't exist, the cleanup must still run cleanly
-    and remove the other files."""
-    from mamp_ml.__main__ import _tidy_intermediate_files
+def test_promote_output_replaces_existing_destination(tmp_path: Path) -> None:
+    """An existing destination (file or dir) is replaced, not nested into."""
+    from mamp_ml.__main__ import _promote_output
 
-    out_dir = tmp_path / "inter"
-    out_dir.mkdir()
-    (out_dir / "test_data.csv").write_text("a,b\n")
+    src = tmp_path / "inter" / "lrr_annotation_plots"
+    src.mkdir(parents=True)
+    (src / "new_plot.png").write_bytes(b"\x89PNG")
+    dest = tmp_path / "lrr_annotation_plots"
+    dest.mkdir()
+    (dest / "stale_plot.png").write_bytes(b"old")
 
-    # predictions.csv intentionally absent.
-    nonexistent_preds = out_dir / "predictions.csv"
-    nonexistent_plots = out_dir / "lrr_annotation_plots"
+    _promote_output(src, dest)
+    assert (dest / "new_plot.png").is_file()
+    assert not (dest / "stale_plot.png").exists()  # old content gone
+    assert not src.exists()
 
-    _tidy_intermediate_files(out_dir, keep=[nonexistent_preds, nonexistent_plots])
-    # The casualty was removed even though the keep targets never existed.
-    assert not (out_dir / "test_data.csv").exists()
-    # out_dir survives.
-    assert out_dir.is_dir()
+
+def test_promote_output_returns_none_when_source_missing(tmp_path: Path) -> None:
+    """A missing source (e.g. predictions never written) is tolerated."""
+    from mamp_ml.__main__ import _promote_output
+
+    result = _promote_output(tmp_path / "nope.csv", tmp_path / "out.csv")
+    assert result is None
+    assert not (tmp_path / "out.csv").exists()
+
+
+def test_promote_output_noop_when_already_at_destination(tmp_path: Path) -> None:
+    """If src and dest are the same path (e.g. --out-dir is the cwd), keep it."""
+    from mamp_ml.__main__ import _promote_output
+
+    f = tmp_path / "predictions.csv"
+    f.write_text("x\n")
+    returned = _promote_output(f, f)
+    assert returned == f
+    assert f.is_file()
 
 
 def test_prepare_summary_mentions_plots_and_intermediates(
