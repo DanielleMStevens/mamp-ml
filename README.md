@@ -46,6 +46,8 @@ This installs the Python package (mamp-ml + pretrained weights bundled) and Cola
 pip install git+https://github.com/DanielleMStevens/mamp-ml.git@version2
 ```
 
+> **Note:** If you see `WARNING: There was an error checking the latest version of pip`, you can ignore it. That is pip's own self-update check failing to reach PyPI — common on cluster compute nodes with restricted internet — not a problem with the install, which has already completed. To suppress it, prefix the command with `PIP_DISABLE_PIP_VERSION_CHECK=1`.
+
 The sample spreadsheet ships inside the package, so you can grab a local copy to inspect the expected input format (or to smoke-test the install) without cloning the repo:
 ```
 mamp-ml example                          # writes example_data.xlsx into the current directory
