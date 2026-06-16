@@ -23,6 +23,23 @@ import pandas as pd
 import torch.nn.functional as F
 import os
 
+#: Human-readable interaction-class names indexed by the model's output label
+#: (0/1/2). Mirrors the encoding in
+#: ``mamp_ml.datasets.seq_with_receptor_dataset.category_to_index`` — the order
+#: here IS the label→name contract, so keep the two in sync.
+CLASS_NAMES = ["Immunogenic", "Non-Immunogenic", "Weakly Immunogenic"]
+
+
+def class_name_for(label) -> str:
+    """Map a numeric class label (0/1/2) to its name; pass through unknowns."""
+    try:
+        index = int(label)
+    except (TypeError, ValueError):
+        return str(label)
+    if 0 <= index < len(CLASS_NAMES):
+        return CLASS_NAMES[index]
+    return str(label)
+
 ######################################################################
 # FiLM (Feature-wise Linear Modulation) Layer for Chemical Conditioning
 ######################################################################
@@ -749,12 +766,20 @@ class ESMBfactorWeightedFeatures(nn.Module):
         # Convert predictions to numpy arrays
         probs = pr.cpu().numpy()
         
-        # Create DataFrame with probabilities and predicted labels
-        results_df = pd.DataFrame(probs, columns=['prob_class0', 'prob_class1', 'prob_class2'])
-        results_df['predicted_label'] = pred_labels.cpu().numpy()
+        # Create DataFrame with probabilities and predicted labels. Columns and
+        # the predicted class are emitted with human-readable class names
+        # (Immunogenic / Non-Immunogenic / Weakly Immunogenic) instead of the
+        # raw 0/1/2 indices, so predictions.csv is self-describing.
+        prob_columns = [f"prob_{name.replace(' ', '_')}" for name in CLASS_NAMES]
+        results_df = pd.DataFrame(probs, columns=prob_columns)
+        results_df['predicted_class'] = [
+            class_name_for(label) for label in pred_labels.cpu().numpy()
+        ]
 
         if gt is not None:
-            results_df['ground_truth'] = gt.cpu().numpy()
+            results_df['ground_truth_class'] = [
+                class_name_for(label) for label in gt.cpu().numpy()
+            ]
         
         num_predictions = len(results_df)
         
