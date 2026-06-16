@@ -465,11 +465,10 @@ def _build_parser() -> argparse.ArgumentParser:
         default="default",
         choices=["default", "all"],
         help=(
-            "What to keep after a successful prediction. The default bundles "
-            "the outputs (predictions.csv + lrr_annotation_plots/) into a "
-            "labeled <output-name>/ folder in the current directory and removes "
-            "the intermediate_files/ working directory. Pass `all` to leave "
-            "every file produced by the pipeline in --out-dir instead (useful "
+            "Whether to keep the intermediate_files/ working directory. Either "
+            "way the outputs (predictions.csv + lrr_annotation_plots/) are moved "
+            "into a labeled <output-name>/ folder in the current directory. The "
+            "default removes intermediate_files/; pass `all` to keep it (useful "
             "for debugging or for re-running prediction without re-folding)."
         ),
     )
@@ -1064,24 +1063,26 @@ def _run_predict(args) -> int:
     # buried under a folder named "intermediate_files".
     # --keep all: leave everything in out_dir untouched (useful for debugging
     # or re-running prediction on a different ligand sheet without re-folding).
+    # Always bundle the deliverables into a labeled output folder in the
+    # invocation dir: <name>/predictions.csv + <name>/lrr_annotation_plots/.
+    # --keep then only governs whether the intermediate_files/ working dir
+    # survives (default: removed; all: kept for debugging / re-running without
+    # re-folding).
+    results_dir = invocation_dir / _resolve_output_dirname(args)
+    final_predictions = _promote_output(
+        predictions_csv, results_dir / "predictions.csv"
+    )
+    final_plots = _promote_output(plots_dir, results_dir / "lrr_annotation_plots")
+    outputs = [
+        ("Output folder", f"{results_dir}/"),
+        ("  predictions", (final_predictions or predictions_csv).name),
+        ("  LRR annotation plots", f"{(final_plots or plots_dir).name}/"),
+    ]
+
     keep_mode = getattr(args, "keep", "default")
     if keep_mode == "all":
-        outputs = [
-            ("Predictions", predictions_csv),
-            ("LRR annotation plots", f"{plots_dir}/"),
-            ("Model-ready CSV", ready_csv),
-            ("All intermediates", f"{out_dir}/"),
-        ]
+        outputs.append(("Intermediates kept", f"{out_dir}/"))
     else:
-        # Bundle the deliverables into a labeled output folder in the
-        # invocation dir: <name>/predictions.csv + <name>/lrr_annotation_plots/.
-        results_dir = invocation_dir / _resolve_output_dirname(args)
-        final_predictions = _promote_output(
-            predictions_csv, results_dir / "predictions.csv"
-        )
-        final_plots = _promote_output(
-            plots_dir, results_dir / "lrr_annotation_plots"
-        )
         # Remove the intermediate_files working directory now that the
         # deliverables are out of it — unless --out-dir points at the invocation
         # dir or the results folder itself (don't delete what we just wrote).
@@ -1090,11 +1091,9 @@ def _run_predict(args) -> int:
             import shutil
 
             shutil.rmtree(out_dir, ignore_errors=True)
-        outputs = [
-            ("Output folder", f"{results_dir}/"),
-            ("  predictions", (final_predictions or predictions_csv).name),
-            ("  LRR annotation plots", f"{(final_plots or plots_dir).name}/"),
-        ]
+        outputs.append(
+            ("(intermediates removed", "rerun with `--keep all` to retain them)")
+        )
     progress.complete("Prediction complete", outputs=outputs)
     return 0
 

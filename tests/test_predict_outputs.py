@@ -130,9 +130,11 @@ def test_predict_subparser_accepts_output_name(example_xlsx) -> None:
     assert parser.parse_args(["predict", str(example_xlsx)]).output_name is None
 
 
-def test_predict_keep_all_leaves_everything_in_intermediate_files(
+def test_predict_keep_all_makes_output_folder_and_keeps_intermediates(
     tmp_path, example_xlsx, monkeypatch
 ) -> None:
+    """--keep all still produces the labeled output folder (deliverables moved
+    there); it only additionally retains the intermediate_files/ working dir."""
     from mamp_ml.__main__ import main as cli_main
 
     monkeypatch.chdir(tmp_path)
@@ -146,19 +148,25 @@ def test_predict_keep_all_leaves_everything_in_intermediate_files(
             "cpu",
             "--weights",
             str(_weights(tmp_path)),
+            "--output-name",
+            "myrun",
             "--keep",
             "all",
         ]
     )
     assert rc == 0
 
+    # Deliverables are in the labeled output folder, as in default mode.
+    assert (tmp_path / "myrun" / "predictions.csv").is_file()
+    assert (tmp_path / "myrun" / "lrr_annotation_plots" / "receptor_plot.png").is_file()
+
+    # intermediate_files/ is retained, holding the non-deliverable intermediates...
     inter = tmp_path / "intermediate_files"
-    # Everything retained in the scratch dir...
-    assert (inter / "predictions.csv").is_file()
+    assert inter.is_dir()
     assert (inter / "test_data.csv").is_file()
-    assert (inter / "lrr_annotation_plots" / "receptor_plot.png").is_file()
-    # ...and NOT promoted to the invocation dir.
-    assert not (tmp_path / "predictions.csv").exists()
+    # ...but the deliverables were MOVED out of it, not left behind.
+    assert not (inter / "predictions.csv").exists()
+    assert not (inter / "lrr_annotation_plots").exists()
 
 
 def test_predict_default_handles_custom_out_dir(
