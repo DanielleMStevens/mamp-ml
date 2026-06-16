@@ -225,8 +225,10 @@ def test_colab_notebook_uses_mamp_ml_cli(repo_root: Path) -> None:
         if cell["cell_type"] == "code"
     )
 
-    # Must invoke the top-level commands.
-    assert "mamp-ml prepare" in all_code, "notebook must invoke `mamp-ml prepare`"
+    # Must invoke the top-level predict command. `mamp-ml predict` now folds
+    # (auto-running ColabFold or in-process ESMFold) AND runs inference in one
+    # command, so the notebook no longer needs a separate `mamp-ml prepare`
+    # step — predict is the single canonical entry point.
     assert "mamp-ml predict" in all_code, "notebook must invoke `mamp-ml predict`"
 
     # Must NOT invoke any of the legacy scripts that we're transitioning away from.

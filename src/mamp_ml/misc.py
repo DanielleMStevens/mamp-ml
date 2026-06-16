@@ -293,12 +293,31 @@ def init_distributed_mode(args):
         args.rank = int(os.environ["RANK"])
         args.world_size = int(os.environ['WORLD_SIZE'])
         args.gpu = int(os.environ['LOCAL_RANK'])
-    elif 'SLURM_PROCID' in os.environ:
+    elif 'SLURM_PROCID' in os.environ and int(os.environ.get('SLURM_NTASKS', '1')) > 1:
+        # Only treat SLURM as distributed for a genuine multi-task job. A
+        # single-task interactive allocation (the common case for running
+        # `mamp-ml predict` on a compute node) sets SLURM_PROCID but is NOT a
+        # distributed launch — fall through to single-process below.
         args.rank = int(os.environ['SLURM_PROCID'])
+        args.world_size = int(os.environ['SLURM_NTASKS'])
         args.gpu = args.rank % torch.cuda.device_count()
     else:
         print('Not using distributed mode')
         setup_for_distributed(is_master=True)  # hack
+        args.distributed = False
+        return
+
+    # `env://` rendezvous needs MASTER_ADDR/MASTER_PORT, which only a real
+    # distributed launcher (torchrun, or a SLURM job that exports them) sets.
+    # If they're absent we can't bring up a process group — and shouldn't try,
+    # since this is then a plain single-process run. Fall back gracefully
+    # instead of crashing with "MASTER_ADDR expected, but not set".
+    if args.dist_url == 'env://' and 'MASTER_ADDR' not in os.environ:
+        print(
+            'Distributed environment variables present but MASTER_ADDR is not '
+            'set; running single-process (non-distributed).'
+        )
+        setup_for_distributed(is_master=True)
         args.distributed = False
         return
 
