@@ -65,6 +65,15 @@ import sys
 from typing import List, Optional
 
 
+# Shared help text for the --cache-dir flag on the model-loading subcommands.
+_CACHE_DIR_HELP = (
+    "Directory for the HuggingFace model cache (ESM-2 / ESMFold weights). "
+    "Defaults to a `model_cache/` folder next to the mamp-ml install — i.e. "
+    "the filesystem you installed onto. Override here (or via $HF_HOME) to use "
+    "a different location, e.g. if HOME is over quota on a cluster."
+)
+
+
 # Worked-example block surfaced at the bottom of both `mamp-ml --help` and
 # `mamp-ml predict --help` via argparse's `epilog`. Mirrors the canonical
 # workflow documented in the README so users get the answer to "how do I
@@ -185,6 +194,11 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     sp.add_argument(
+        "--cache-dir",
+        default=None,
+        help=_CACHE_DIR_HELP,
+    )
+    sp.add_argument(
         "--chunk-size",
         type=int,
         default=None,
@@ -287,6 +301,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Torch device (cpu / cuda / mps); only relevant for esmfold.",
     )
     sp.add_argument(
+        "--cache-dir",
+        default=None,
+        help=_CACHE_DIR_HELP,
+    )
+    sp.add_argument(
         "--max-length",
         type=int,
         default=1024,
@@ -386,6 +405,11 @@ def _build_parser() -> argparse.ArgumentParser:
             "Pass 'cuda' on a GPU host for ~50-100x speedup. "
             "Also used for ESMFold folding when --structure esmfold is selected."
         ),
+    )
+    sp.add_argument(
+        "--cache-dir",
+        default=None,
+        help=_CACHE_DIR_HELP,
     )
     sp.add_argument(
         "--sheet-name",
@@ -541,6 +565,54 @@ def _pipeline_subtitle(args) -> str:
         bits.append(f"device: {device}")
     bits.append(f"structure: {getattr(args, 'structure', 'colabfold')}")
     return "  ·  ".join(bits)
+
+
+def _default_model_cache_dir() -> "Path":
+    """Default HuggingFace model-cache location: a ``model_cache/`` directory
+    next to the mamp-ml install.
+
+    This lands the (multi-GB) ESM-2 / ESMFold weights on whatever filesystem
+    mamp-ml was installed to — which avoids a small-quota HOME ``~/.cache`` for
+    cluster users who install onto scratch — without hardcoding any
+    site-specific path. Override with ``--cache-dir`` or ``$HF_HOME``.
+    """
+    from pathlib import Path
+
+    import mamp_ml
+
+    return Path(mamp_ml.__file__).resolve().parent / "model_cache"
+
+
+def _configure_model_cache(args) -> None:
+    """Point the HuggingFace cache at a writable location, before any load.
+
+    Resolution order (highest priority first):
+
+    1. ``--cache-dir`` on the CLI,
+    2. an ``HF_HOME`` / ``HF_HUB_CACHE`` the user already exported (respected,
+       never overridden),
+    3. :func:`_default_model_cache_dir` — next to the install.
+
+    Sets ``HF_HOME`` in the process environment so it is inherited by both
+    in-process model loads (ESM-2, ESMFold) and the ColabFold subprocess. Must
+    run *before* ``transformers`` / ``huggingface_hub`` are imported — we call
+    it at the top of :func:`main`. No-op (leaving HF's own default) if the
+    directory can't be created, e.g. a read-only install.
+    """
+    import os
+    from pathlib import Path
+
+    cache_dir = getattr(args, "cache_dir", None)
+    if cache_dir is None:
+        if os.environ.get("HF_HOME") or os.environ.get("HF_HUB_CACHE"):
+            return  # respect the user's explicit environment
+        cache_dir = _default_model_cache_dir()
+    cache_path = Path(cache_dir)
+    try:
+        cache_path.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return
+    os.environ["HF_HOME"] = str(cache_path)
 
 
 def _is_disk_full_error(exc: OSError) -> bool:
@@ -919,22 +991,24 @@ def _run_predict(args) -> int:
             infer.fail("disk quota / no space while caching model weights")
             print()
             print(
-                "ESM-2 weights are downloaded to the HuggingFace cache, and the "
-                "target filesystem is out of space:"
+                "ESM-2 weights are cached to disk and the target filesystem is "
+                "out of space / over quota:"
             )
             print(f"  {exc}")
             print()
             print(
-                "On HPC clusters the default cache (~/.cache/huggingface, on a "
-                "small-quota HOME) is the usual culprit. Point it at a roomier "
-                "location (e.g. scratch) and re-run:"
+                "By default mamp-ml caches model weights next to its install "
+                f"({_default_model_cache_dir()}). Point the cache at a "
+                "filesystem with more room and re-run — either pass --cache-dir, "
+                "or export HF_HOME:"
             )
             print()
-            print("  export HF_HOME=/path/to/scratch/.cache/huggingface")
-            print('  mkdir -p "$HF_HOME"')
-            print(f"  mamp-ml predict {args.xlsx} --device {args.device}")
-            print()
-            print("Add the `export` line to your ~/.bashrc to make it permanent.")
+            print(
+                f"  mamp-ml predict {args.xlsx} --device {args.device} "
+                "--cache-dir /path/with/room"
+            )
+            print("  # or, once for the whole session:")
+            print("  export HF_HOME=/path/with/room")
             return 5
         raise
     finally:
@@ -1180,6 +1254,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     """
     parser = _build_parser()
     args = parser.parse_args(argv)
+
+    # Steer the HuggingFace model cache to a writable location before any of
+    # the model-loading subcommands import transformers / huggingface_hub.
+    if args.cmd in ("predict", "prepare", "fold"):
+        _configure_model_cache(args)
 
     if args.cmd == "prepare":
         return _run_prepare(args)

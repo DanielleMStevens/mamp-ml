@@ -78,14 +78,17 @@ mamp-ml predict input_data.xlsx --structure esmfold --device cuda
 
 A successful run produces `intermediate_files/predictions.csv` (per-row class probabilities) and `intermediate_files/lrr_annotation_plots/` (per-receptor LRR regression plots). By default the other intermediates are cleaned up; pass `--keep all` to retain them. Pass `--weights /path/to/checkpoint.pth` to predict against a custom-trained model instead of the bundled one.
 
-### Running on an HPC cluster
+### Model weights cache (and HPC quotas)
 
-`mamp-ml` downloads the ESM-2 weights to the HuggingFace cache, which defaults to `~/.cache/huggingface`. On clusters, HOME usually has a small quota — if you hit `OSError: [Errno 122] Disk quota exceeded`, point the cache at a roomier filesystem (e.g. scratch) before running:
+`mamp-ml` downloads the model weights (ESM-2, and ESMFold if you use it) through the HuggingFace cache. By **default it caches into a `model_cache/` folder next to the mamp-ml install** — i.e. on whatever filesystem you installed onto — rather than the usual `~/.cache/huggingface`. This keeps the (multi-GB) weights off a small-quota HOME on shared systems without you having to configure anything.
+
+To put the cache somewhere else (a shared read-only mirror, a larger volume, etc.), either pass `--cache-dir` or export `HF_HOME`:
 ```
-export HF_HOME=/path/to/scratch/.cache/huggingface
-mkdir -p "$HF_HOME"
+mamp-ml predict input_data.xlsx --device cuda --cache-dir /path/with/room
+# or, once for the whole session / in ~/.bashrc:
+export HF_HOME=/path/with/room
 ```
-Add that line to your `~/.bashrc` to make it permanent. (`mamp-ml predict` detects this error and prints the same guidance.)
+An explicit `HF_HOME` always wins over the default. If a run ever hits `OSError: ... Disk quota exceeded`, `mamp-ml predict` catches it and prints exactly this guidance.
 
 ## Computational requirements:
 

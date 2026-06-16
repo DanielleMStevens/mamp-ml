@@ -19,6 +19,22 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_hf_cache(tmp_path_factory, monkeypatch):
+    """Keep model-cache configuration from touching the source tree.
+
+    ``mamp-ml``'s CLI steers the HuggingFace cache to a ``model_cache/`` folder
+    next to the install when neither ``--cache-dir`` nor ``HF_HOME`` is set
+    (see ``_configure_model_cache``). Under test that would create a directory
+    inside ``src/mamp_ml/``. Pre-setting ``HF_HOME`` to a throwaway temp dir
+    makes that logic a respected-user-environment no-op, so the suite never
+    pollutes the package. Tests that exercise the default branch explicitly
+    delete these vars themselves.
+    """
+    monkeypatch.setenv("HF_HOME", str(tmp_path_factory.mktemp("hf_home")))
+    monkeypatch.delenv("HF_HUB_CACHE", raising=False)
+
+
 @pytest.fixture(scope="session")
 def repo_root() -> Path:
     """Absolute path to the repository root checkout."""

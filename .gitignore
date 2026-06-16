@@ -38,3 +38,7 @@ logs/
 
 # Structure-stage geometry cache (default --structure-cache-dir; derivable)
 LRR_Annotation/
+
+# HuggingFace model cache written next to the install by default (re-downloadable)
+model_cache/
+src/mamp_ml/model_cache/
