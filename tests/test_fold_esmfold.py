@@ -408,6 +408,11 @@ def test_predict_help_includes_end_to_end_example(repo_root: Path) -> None:
     assert "Example usage" in out
     assert "--structure esmfold" in out
     assert "--keep all" in out
+    # The help documents the output: the predicted class names + the folder.
+    assert "Output" in out
+    assert "Immunogenic" in out
+    assert "Non-Immunogenic" in out
+    assert "Weakly" in out
 
 
 def test_predict_subparser_accepts_chunk_size_flag(example_xlsx: Path) -> None:

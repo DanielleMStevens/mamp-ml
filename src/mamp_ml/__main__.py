@@ -97,6 +97,15 @@ Example usage
   # Keep every intermediate file (default keeps only predictions + plots)
   mamp-ml predict input_data.xlsx --keep all
 
+Output
+------
+  predict writes an `<output-name>/` folder (default: a unique
+  `output_<timestamp>/`) containing:
+    - predictions.csv      one row per receptor-ligand pair, with the predicted
+                           class (Immunogenic / Non-Immunogenic / Weakly
+                           Immunogenic) and the per-class probabilities
+    - lrr_annotation_plots/  per-receptor LRR regression plots
+
 See the README at https://github.com/DanielleMStevens/mamp-ml for the
 full workflow + input spreadsheet format.
 """
@@ -336,12 +345,14 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
         description=(
             "Runs `prepare` to produce ready_test_data.csv, then loads the "
-            "bundled MAMP-ml checkpoint and runs ESM-2 inference, writing "
-            "the predictions CSV the user actually wants. If ColabFold has "
-            "not been run yet the command auto-runs a discovered "
-            "colabfold_batch install (or prints the invocation and exits "
-            "cleanly when none is found, so the user can run ColabFold and "
-            "re-invoke this command)."
+            "bundled MAMP-ml checkpoint and runs ESM-2 inference, writing the "
+            "predictions CSV the user actually wants — one row per "
+            "receptor-ligand pair with the predicted class (Immunogenic / "
+            "Non-Immunogenic / Weakly Immunogenic) and per-class probabilities. "
+            "If ColabFold has not been run yet the command auto-runs a "
+            "discovered colabfold_batch install (or prints the invocation and "
+            "exits cleanly when none is found, so the user can run ColabFold "
+            "and re-invoke this command)."
         ),
         epilog=_USAGE_EXAMPLES,
         formatter_class=argparse.RawDescriptionHelpFormatter,
