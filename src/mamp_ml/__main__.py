@@ -443,11 +443,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--output-name",
         default=None,
         help=(
-            "Base name for this run's outputs: writes `<name>.csv` and "
-            "`<name>_lrr_annotation_plots/`. A trailing `.csv` is fine. "
-            "Defaults to a unique, timestamped name like "
-            "`output_2026-06-15_20-30-00` so repeated runs don't overwrite each "
-            "other. Applies to the default --keep mode."
+            "Name of the output folder this run writes into; it contains "
+            "predictions.csv and lrr_annotation_plots/. Defaults to a unique, "
+            "timestamped name like `output_2026-06-15_20-30-00` so repeated "
+            "runs don't overwrite each other. Applies to the default --keep mode."
         ),
     )
     sp.add_argument(
@@ -455,12 +454,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default="default",
         choices=["default", "all"],
         help=(
-            "What to keep after a successful prediction. The default promotes "
-            "the two outputs — `<output-name>.csv` and its plots dir — into the "
-            "current directory and removes the intermediate_files/ working "
-            "directory. Pass `all` to leave every file produced by the pipeline "
-            "in --out-dir instead (useful for debugging or for re-running "
-            "prediction without re-folding)."
+            "What to keep after a successful prediction. The default bundles "
+            "the outputs (predictions.csv + lrr_annotation_plots/) into a "
+            "labeled <output-name>/ folder in the current directory and removes "
+            "the intermediate_files/ working directory. Pass `all` to leave "
+            "every file produced by the pipeline in --out-dir instead (useful "
+            "for debugging or for re-running prediction without re-folding)."
         ),
     )
 
@@ -657,20 +656,17 @@ def _count_csv_rows(csv_path: "Path") -> int:
     return max(0, total - 1)
 
 
-def _resolve_output_basename(args) -> str:
-    """Base name for this run's promoted outputs (``<base>.csv`` + plots dir).
+def _resolve_output_dirname(args) -> str:
+    """Name of the folder this run's outputs are written into.
 
-    Uses ``--output-name`` if given (a trailing ``.csv`` is stripped so users
-    can pass either ``run1`` or ``run1.csv``), otherwise a unique, timestamped
-    default like ``output_2026-06-15_20-30-00`` so repeated runs don't clobber
-    each other.
+    The folder holds ``predictions.csv`` and ``lrr_annotation_plots/``. Uses
+    ``--output-name`` if given, otherwise a unique, timestamped default like
+    ``output_2026-06-15_20-30-00`` so repeated runs don't clobber each other.
     """
     import datetime
 
     name = getattr(args, "output_name", None)
     if name:
-        if name.lower().endswith(".csv"):
-            name = name[:-4]
         return name
     return "output_" + datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
@@ -1066,24 +1062,27 @@ def _run_predict(args) -> int:
             ("All intermediates", f"{out_dir}/"),
         ]
     else:
-        base = _resolve_output_basename(args)
+        # Bundle the deliverables into a labeled output folder in the
+        # invocation dir: <name>/predictions.csv + <name>/lrr_annotation_plots/.
+        results_dir = invocation_dir / _resolve_output_dirname(args)
         final_predictions = _promote_output(
-            predictions_csv, invocation_dir / f"{base}.csv"
+            predictions_csv, results_dir / "predictions.csv"
         )
         final_plots = _promote_output(
-            plots_dir, invocation_dir / f"{base}_lrr_annotation_plots"
+            plots_dir, results_dir / "lrr_annotation_plots"
         )
         # Remove the intermediate_files working directory now that the
-        # deliverables are out of it — unless the user pointed --out-dir at the
-        # invocation dir itself.
-        if out_dir.resolve() != invocation_dir.resolve():
+        # deliverables are out of it — unless --out-dir points at the invocation
+        # dir or the results folder itself (don't delete what we just wrote).
+        protected = {invocation_dir.resolve(), results_dir.resolve()}
+        if out_dir.resolve() not in protected:
             import shutil
 
             shutil.rmtree(out_dir, ignore_errors=True)
         outputs = [
-            ("Predictions", final_predictions or predictions_csv),
-            ("LRR annotation plots", f"{final_plots or plots_dir}/"),
-            ("(intermediates removed", "rerun with `--keep all` to retain them)"),
+            ("Output folder", f"{results_dir}/"),
+            ("  predictions", (final_predictions or predictions_csv).name),
+            ("  LRR annotation plots", f"{(final_plots or plots_dir).name}/"),
         ]
     progress.complete("Prediction complete", outputs=outputs)
     return 0

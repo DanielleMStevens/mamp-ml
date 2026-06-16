@@ -47,7 +47,7 @@ def _weights(tmp_path: Path) -> Path:
     return w
 
 
-def test_predict_default_promotes_named_outputs_and_removes_workdir(
+def test_predict_default_bundles_outputs_in_named_folder(
     tmp_path, example_xlsx, monkeypatch, capsys
 ) -> None:
     from mamp_ml.__main__ import main as cli_main
@@ -69,20 +69,20 @@ def test_predict_default_promotes_named_outputs_and_removes_workdir(
     )
     assert rc == 0
 
-    # Deliverables landed in the invocation directory under the chosen name...
-    assert (tmp_path / "myrun.csv").is_file()
-    assert (tmp_path / "myrun_lrr_annotation_plots" / "receptor_plot.png").is_file()
+    # Deliverables land in a labeled folder, predictions.csv keeps its name...
+    assert (tmp_path / "myrun" / "predictions.csv").is_file()
+    assert (tmp_path / "myrun" / "lrr_annotation_plots" / "receptor_plot.png").is_file()
     # ...and the intermediate_files working dir is gone entirely.
     assert not (tmp_path / "intermediate_files").exists()
 
     out = capsys.readouterr().out
-    assert "intermediates removed" in out
+    assert "Output folder" in out
 
 
-def test_predict_default_output_name_is_unique_timestamped(
+def test_predict_default_output_folder_is_unique_timestamped(
     tmp_path, example_xlsx, monkeypatch
 ) -> None:
-    """With no --output-name, outputs get a unique `output_<timestamp>` name."""
+    """With no --output-name, outputs go into a unique `output_<timestamp>/`."""
     import re
 
     from mamp_ml.__main__ import main as cli_main
@@ -95,32 +95,29 @@ def test_predict_default_output_name_is_unique_timestamped(
     )
     assert rc == 0
 
-    csvs = list(tmp_path.glob("output_*.csv"))
-    assert len(csvs) == 1, f"expected one timestamped output CSV, got {csvs}"
-    assert re.match(r"output_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.csv$", csvs[0].name)
-    plots = list(tmp_path.glob("output_*_lrr_annotation_plots"))
-    assert len(plots) == 1 and plots[0].is_dir()
+    folders = [p for p in tmp_path.glob("output_*") if p.is_dir()]
+    assert len(folders) == 1, f"expected one timestamped output folder, got {folders}"
+    assert re.match(r"output_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}$", folders[0].name)
+    assert (folders[0] / "predictions.csv").is_file()
+    assert (folders[0] / "lrr_annotation_plots").is_dir()
     assert not (tmp_path / "intermediate_files").exists()
 
 
-def test_resolve_output_basename_uses_flag_and_strips_csv() -> None:
+def test_resolve_output_dirname_uses_flag() -> None:
     import types
 
-    from mamp_ml.__main__ import _resolve_output_basename
+    from mamp_ml.__main__ import _resolve_output_dirname
 
-    assert _resolve_output_basename(types.SimpleNamespace(output_name="run1")) == "run1"
-    # A trailing .csv (any case) is stripped so both forms work.
-    assert _resolve_output_basename(types.SimpleNamespace(output_name="run1.csv")) == "run1"
-    assert _resolve_output_basename(types.SimpleNamespace(output_name="run1.CSV")) == "run1"
+    assert _resolve_output_dirname(types.SimpleNamespace(output_name="run1")) == "run1"
 
 
-def test_resolve_output_basename_default_is_timestamped() -> None:
+def test_resolve_output_dirname_default_is_timestamped() -> None:
     import re
     import types
 
-    from mamp_ml.__main__ import _resolve_output_basename
+    from mamp_ml.__main__ import _resolve_output_dirname
 
-    name = _resolve_output_basename(types.SimpleNamespace(output_name=None))
+    name = _resolve_output_dirname(types.SimpleNamespace(output_name=None))
     assert re.match(r"output_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}$", name)
 
 
@@ -189,5 +186,5 @@ def test_predict_default_handles_custom_out_dir(
         ]
     )
     assert rc == 0
-    assert (tmp_path / "run.csv").is_file()
+    assert (tmp_path / "run" / "predictions.csv").is_file()
     assert not scratch.exists()
