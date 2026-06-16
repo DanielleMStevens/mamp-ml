@@ -533,11 +533,43 @@ def _resolve_default_bfactor_cache() -> "Path":
     return Path(__file__).resolve().parent / "lrr_annotation" / "cache"
 
 
-def _run_prepare(args) -> int:
+def _pipeline_subtitle(args) -> str:
+    """One-line context shown under the run banner: input + device + tool."""
+    bits = [f"input: {args.xlsx}"]
+    device = getattr(args, "device", None)
+    if device:
+        bits.append(f"device: {device}")
+    bits.append(f"structure: {getattr(args, 'structure', 'colabfold')}")
+    return "  ·  ".join(bits)
+
+
+def _count_csv_rows(csv_path: "Path") -> int:
+    """Best-effort count of data rows in a CSV (excludes the header).
+
+    Returns 0 if the file is missing or unreadable — this is only used for a
+    human-readable progress summary, never for control flow.
+    """
+    try:
+        with open(csv_path, encoding="utf-8") as fh:
+            total = sum(1 for _ in fh)
+    except OSError:
+        return 0
+    return max(0, total - 1)
+
+
+def _run_prepare(args, *, progress=None) -> int:
     """One-shot pipeline orchestrator behind the ``prepare`` subcommand.
 
     Mirrors the legacy ``prepare_input_data.sh`` + ``run_preparation_pipeline.sh``
     flow but in a single Python process so the user only invokes one command.
+
+    Parameters
+    ----------
+    progress
+        An existing :class:`mamp_ml.progress.PipelineProgress` to report into
+        (passed by :func:`_run_predict` so prep + inference share one banner and
+        total timer). When ``None`` (the standalone ``prepare`` command) this
+        function owns the reporter and prints its own banner + closing summary.
 
     Returns
     -------
@@ -548,6 +580,13 @@ def _run_prepare(args) -> int:
         exact command to run next).
     """
     from pathlib import Path
+
+    from mamp_ml.progress import PipelineProgress
+
+    own_progress = progress is None
+    if own_progress:
+        progress = PipelineProgress(6)
+        progress.banner(f"mamp-ml {getattr(args, 'cmd', 'prepare')}", _pipeline_subtitle(args))
 
     from mamp_ml.preprocess import (
         add_chemical_features,
@@ -586,24 +625,27 @@ def _run_prepare(args) -> int:
     test_data_csv = out_dir / "test_data.csv"
     ready_csv = out_dir / "ready_test_data.csv"
 
-    # ---- Stage 1/6 ----
+    # ---- Step 1/6: receptor FASTA ----
+    step = progress.start("Receptor FASTA", estimate="<5s")
     n = xlsx_to_receptor_fasta(
         xlsx_path, receptor_fasta, sheet_name=args.sheet_name
     )
-    print(f"[1/6] receptor FASTA: wrote {n} unique records -> {receptor_fasta}")
+    step.done(f"{n} unique receptor record(s)", target=receptor_fasta)
 
-    # ---- Folding gate ----
+    # ---- Folding phase (not one of the 6 numbered steps) ----
     # Both tools end up writing into the same colabfold_dir (the same PDB
     # filename convention + log.txt schema), so the gating logic only
     # differs in *what to do when the outputs are missing*: for colabfold we
-    # print a hint and exit, for esmfold we auto-run the in-process tool.
+    # run the discovered binary (or print a hint and exit), for esmfold we
+    # auto-run the in-process tool.
     log_path = colabfold_dir / "log.txt"
     structure_tool = getattr(args, "structure", "colabfold")
     if not log_path.is_file():
         if structure_tool == "esmfold":
-            print()
-            print(
-                f"Folding {receptor_fasta} with ESMFold (in-process) ..."
+            fold = progress.start(
+                "Fold receptors · ESMFold (in-process)",
+                estimate=f"~1–3 min/receptor on GPU, ~20–40 min on CPU × {n}",
+                numbered=False,
             )
             device = _resolve_torch_device(getattr(args, "device", None))
             from mamp_ml.fold.esmfold import fold_with_esmfold
@@ -614,7 +656,7 @@ def _run_prepare(args) -> int:
                 device=device,
                 chunk_size=getattr(args, "chunk_size", None),
             )
-            print(f"   wrote {len(pdbs)} PDB(s) + log.txt to {colabfold_dir}")
+            fold.done(f"{len(pdbs)} PDB(s) + log.txt", target=colabfold_dir)
         else:
             from mamp_ml.fold.colabfold import (
                 find_colabfold_installs,
@@ -628,18 +670,21 @@ def _run_prepare(args) -> int:
                 # binary is invoked by absolute path, so no `export PATH` /
                 # `conda activate` is needed even when it lives in another env.
                 binary, source = existing[0]
-                print()
-                print(
-                    "ColabFold output is missing; running the discovered "
-                    "colabfold_batch automatically:"
+                fold = progress.start(
+                    "Fold receptors · ColabFold (auto-detected)",
+                    estimate=f"~2–10 min/receptor on GPU × {n}",
+                    numbered=False,
                 )
-                print(f"  {binary}  ({source})")
+                # NB: keep the literal phrase below — tests assert on it.
+                print(
+                    "  running the discovered colabfold_batch automatically:"
+                )
+                fold.info(f"{binary}  ({source})")
                 if len(existing) > 1:
-                    print(
-                        f"  ({len(existing) - 1} other install(s) found; the "
-                        "$PATH-preferred one above is used. Re-order $PATH to "
-                        "prefer a different one, or run `mamp-ml find-colabfold` "
-                        "to list them.)"
+                    fold.info(
+                        f"{len(existing) - 1} other install(s) found; the "
+                        "$PATH-preferred one above is used (run `mamp-ml "
+                        "find-colabfold` to list them)"
                     )
                 print()
                 rc = run_colabfold_batch(
@@ -650,7 +695,7 @@ def _run_prepare(args) -> int:
                     num_recycle=1,
                 )
                 if rc != 0:
-                    print()
+                    fold.fail(f"ColabFold exited with status {rc}")
                     print(
                         f"ColabFold exited with status {rc} (see its output "
                         "above). Fix the error and re-run this command, or run "
@@ -664,15 +709,15 @@ def _run_prepare(args) -> int:
                     )
                     return 2
                 if not log_path.is_file():
-                    print()
+                    fold.fail("ColabFold wrote no log.txt")
                     print(
                         "ColabFold finished (status 0) but wrote no log.txt to "
                         f"{colabfold_dir}; cannot continue. Check ColabFold's "
                         "output above for warnings."
                     )
                     return 2
-                print()
-                print(f"ColabFold finished -> {colabfold_dir}")
+                # NB: keep the literal "ColabFold finished ->" — tests assert it.
+                fold.done("ColabFold finished ->", target=colabfold_dir)
                 # Fall through to the structure stage with the fresh outputs.
             else:
                 print()
@@ -698,7 +743,8 @@ def _run_prepare(args) -> int:
                 )
                 return 2
 
-    # ---- Stage 2/6 ----
+    # ---- Step 2/6: structure stage (LRR annotation) ----
+    step = progress.start("Structure analysis · LRR annotation", estimate="~15–90s")
     n_lrr = run_structure_stage(
         colabfold_dir,
         scores_path,
@@ -707,46 +753,44 @@ def _run_prepare(args) -> int:
         cache_dir=structure_cache_dir,
         plot_dir=plot_dir,
     )
-    print(
-        f"[2/6] structure-stage: {n_lrr} LRR region rows -> {lrr_results}"
-    )
+    step.done(f"{n_lrr} LRR region row(s)", target=lrr_results)
 
-    # ---- Stage 3/6 ----
+    # ---- Step 3/6: LRR-domain FASTA ----
+    step = progress.start("LRR-domain FASTA", estimate="<5s")
     n_dom = build_lrr_domain_fasta(lrr_results, receptor_fasta, lrr_domain_fasta)
-    print(
-        f"[3/6] LRR-domain FASTA: {n_dom} sequences -> {lrr_domain_fasta}"
-    )
+    step.done(f"{n_dom} sequence(s)", target=lrr_domain_fasta)
 
-    # ---- Stage 4/6 ----
+    # ---- Step 4/6: B-factor analysis ----
+    step = progress.start("B-factor winding analysis", estimate="~10–60s")
     bfactor_df = write_bfactor_lrr_segments(
         pdb_target_dir, bfactor_cache_dir, bfactor_csv
     )
-    print(
-        f"[4/6] B-factor analysis: {len(bfactor_df)} rows -> {bfactor_csv}"
-    )
+    step.done(f"{len(bfactor_df)} row(s)", target=bfactor_csv)
 
-    # ---- Stage 5/6 ----
+    # ---- Step 5/6: test-data assembly ----
+    step = progress.start("Test-data assembly", estimate="<10s")
     test_df = assemble_test_data(
         xlsx_path,
         lrr_domain_fasta,
         test_data_csv,
         sheet_name=args.sheet_name,
     )
-    print(
-        f"[5/6] test-data assembly: {len(test_df)} rows -> {test_data_csv}"
-    )
+    step.done(f"{len(test_df)} row(s)", target=test_data_csv)
 
-    # ---- Stage 6/6 ----
+    # ---- Step 6/6: chemical features ----
+    step = progress.start("Chemical-feature annotation", estimate="<10s")
     ready_df = add_chemical_features(test_data_csv, ready_csv)
-    print(
-        f"[6/6] chemical features: {len(ready_df)} rows -> {ready_csv}"
-    )
+    step.done(f"{len(ready_df)} row(s)", target=ready_csv)
 
-    print()
-    print("Preparation complete.")
-    print("  Model-ready CSV     : {}".format(ready_csv))
-    print("  LRR annotation plots: {}/".format(plot_dir))
-    print("  All intermediates   : {}/".format(out_dir))
+    if own_progress:
+        progress.complete(
+            "Preparation complete",
+            outputs=[
+                ("Model-ready CSV", ready_csv),
+                ("LRR annotation plots", f"{plot_dir}/"),
+                ("All intermediates", f"{out_dir}/"),
+            ],
+        )
     return 0
 
 
@@ -789,10 +833,17 @@ def _run_predict(args) -> int:
         )
         return 2
 
+    # One shared progress reporter spans the 6 prep steps + the inference phase
+    # so the banner and total timer cover the whole `predict` run.
+    from mamp_ml.progress import PipelineProgress
+
+    progress = PipelineProgress(6)
+    progress.banner("mamp-ml predict", _pipeline_subtitle(args))
+
     # The prepare args parser declares a superset of what we need here, but
     # the same attribute names — so feed args directly into _run_prepare
     # without rebuilding a namespace.
-    prepare_rc = _run_prepare(args)
+    prepare_rc = _run_prepare(args, progress=progress)
     if prepare_rc != 0:
         return prepare_rc
 
@@ -814,8 +865,12 @@ def _run_predict(args) -> int:
         print(f"Error: ready_test_data.csv missing at {ready_csv}.")
         return 4
 
-    print()
-    print(f"Running ESM-2 inference on {ready_csv} (device: {args.device}) ...")
+    infer = progress.start(
+        "Predict · ESM-2 inference",
+        estimate="~30s–3 min on GPU, longer on CPU",
+        numbered=False,
+    )
+    infer.info(f"weights: {weights}")
 
     eval_argv = [
         "--model", "esm2_bfactor_weighted",
@@ -847,6 +902,7 @@ def _run_predict(args) -> int:
 
     predictions_csv = out_dir / "predictions.csv"
     plots_dir = out_dir / "lrr_annotation_plots"
+    infer.done(f"{_count_csv_rows(predictions_csv)} prediction(s)", target=predictions_csv)
 
     # --keep default: tidy up the intermediate artefacts so the user sees
     # just the two outputs that actually matter for their downstream work.
@@ -860,17 +916,18 @@ def _run_predict(args) -> int:
             keep=(predictions_csv, plots_dir),
         )
 
-    print()
-    print("Prediction complete.")
-    print("  Predictions         : {}".format(predictions_csv))
-    print("  LRR annotation plots: {}/".format(plots_dir))
+    outputs = [
+        ("Predictions", predictions_csv),
+        ("LRR annotation plots", f"{plots_dir}/"),
+    ]
     if keep_mode == "all":
-        print("  Model-ready CSV     : {}".format(ready_csv))
-        print("  All intermediates   : {}/".format(out_dir))
+        outputs.append(("Model-ready CSV", ready_csv))
+        outputs.append(("All intermediates", f"{out_dir}/"))
     else:
-        print(
-            "  (other intermediates removed; rerun with `--keep all` to retain them)"
+        outputs.append(
+            ("(other intermediates removed", "rerun with `--keep all` to retain them)")
         )
+    progress.complete("Prediction complete", outputs=outputs)
     return 0
 
 

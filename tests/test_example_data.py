@@ -81,7 +81,7 @@ def test_run_predict_example_flag_uses_bundled_dataset(monkeypatch, capsys) -> N
 
     captured: dict = {}
 
-    def fake_prepare(args) -> int:
+    def fake_prepare(args, *, progress=None) -> int:
         captured["xlsx"] = args.xlsx
         return 2  # gate-style early return so predict stops here
 
