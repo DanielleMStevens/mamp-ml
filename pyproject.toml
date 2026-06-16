@@ -90,6 +90,12 @@ esmfold = [
     "accelerate>=0.20",
 ]
 
+# Training-only tooling. Inference (`mamp-ml predict`) never needs these; they
+# are required only to (re)train the model via `mamp_ml.train`.
+train = [
+    "wandb>=0.15",
+]
+
 # Development + test tooling.
 dev = [
     "pytest>=7",

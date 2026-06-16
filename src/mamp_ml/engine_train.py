@@ -35,7 +35,14 @@ from mamp_ml.losses.supcon import SupConLoss
 
 from transformers.tokenization_utils_base import BatchEncoding
 from mamp_ml import misc
-import wandb
+
+# wandb is a training-only dependency; the wandb.log() call below is guarded on
+# `args.disable_wandb` (set/normalized by mamp_ml.train). Import lazily so a
+# missing wandb does not break inference, which never logs to W&B.
+try:
+    import wandb
+except ImportError:
+    wandb = None
 from pathlib import Path
 from sklearn.metrics import (
     precision_score,

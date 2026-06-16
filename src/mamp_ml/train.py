@@ -43,12 +43,22 @@ import argparse
 import datetime
 import time
 import os
-import wandb
+import warnings
 import random
 import numpy as np
 import pandas as pd
 from functools import partial
 from pathlib import Path
+
+# wandb is a *training-only* dependency (experiment tracking). It is not
+# required for inference: `mamp-ml predict` always passes `--disable_wandb`,
+# and every wandb.* call below is guarded on that flag. Import it lazily so a
+# missing wandb (the common case for inference-only / pip installs) does not
+# break `from mamp_ml import train`.
+try:
+    import wandb
+except ImportError:
+    wandb = None
 
 import torch
 import torch.nn as nn
@@ -249,6 +259,26 @@ wandb_dict = {
 }
 
 
+def _disable_wandb_if_unavailable(args):
+    """Disable W&B logging (with a warning) when it was requested but isn't installed.
+
+    wandb is an optional training-only dependency. If the user did not pass
+    ``--disable_wandb`` but the package isn't importable, we flip the flag here
+    rather than letting a later ``wandb.init()`` crash — every wandb call is
+    already guarded on ``args.disable_wandb``. Returns ``args`` for convenience.
+    """
+    if not getattr(args, "disable_wandb", False) and wandb is None:
+        warnings.warn(
+            "wandb is not installed; disabling W&B logging for this run. "
+            "wandb is only needed for training — install it with "
+            "`pip install wandb` (or `pip install mamp-ml[train]`) to enable "
+            "experiment tracking.",
+            stacklevel=2,
+        )
+        args.disable_wandb = True
+    return args
+
+
 def main(args):
     """
     Main training/evaluation function for the MAMP model.
@@ -276,7 +306,10 @@ def main(args):
     """
     # Initialize distributed training
     misc.init_distributed_mode(args)
-    
+
+    # Gracefully fall back to no-W&B if it was requested but isn't installed.
+    _disable_wandb_if_unavailable(args)
+
     # Setup WandB logging if enabled
     if not args.disable_wandb and misc.is_main_process():
         current_datetime = datetime.datetime.now().strftime("%m-%d-%Y_%H:%M:%S")
