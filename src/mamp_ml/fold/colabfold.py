@@ -17,15 +17,20 @@ CLI:
 
 * The colabfold gate in :func:`mamp_ml.__main__._run_prepare` — when the user
   runs ``mamp-ml predict`` and ColabFold output is missing, the same search
-  fires automatically and the hint message highlights any local installs.
+  fires automatically; a discovered install is run via
+  :func:`run_colabfold_batch` (no manual re-invocation), and only when nothing
+  is found does the gate fall back to a copy-paste hint.
 """
 
 from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Sequence, Tuple, Union
+
+PathLike = Union[str, Path]
 
 #: Filenames we recognise as the ColabFold entry point.
 _COLABFOLD_BIN_NAME = "colabfold_batch"
@@ -154,6 +159,92 @@ def _list_dir_silent(p: Path) -> List[Path]:
         return list(p.iterdir())
     except (OSError, RuntimeError):
         return []
+
+
+def build_colabfold_command(
+    binary: PathLike,
+    fasta_path: PathLike,
+    output_dir: PathLike,
+    *,
+    num_models: int = 1,
+    num_recycle: int = 1,
+    extra_args: "Sequence[str] | None" = None,
+) -> List[str]:
+    """Assemble the ``colabfold_batch`` argv for a discovered install.
+
+    Factored out from :func:`run_colabfold_batch` so the exact command can be
+    asserted in tests and reused in user-facing hints. The binary is referenced
+    by its absolute path; positional ``fasta_path`` and ``output_dir`` come
+    last, matching ColabFold's ``colabfold_batch <input> <output>`` contract.
+    """
+    cmd = [
+        str(binary),
+        "--num-models",
+        str(num_models),
+        "--num-recycle",
+        str(num_recycle),
+    ]
+    if extra_args:
+        cmd.extend(extra_args)
+    cmd.extend([str(fasta_path), str(output_dir)])
+    return cmd
+
+
+def run_colabfold_batch(
+    binary: PathLike,
+    fasta_path: PathLike,
+    output_dir: PathLike,
+    *,
+    num_models: int = 1,
+    num_recycle: int = 1,
+    extra_args: "Sequence[str] | None" = None,
+) -> int:
+    """Run a discovered ``colabfold_batch`` binary on ``fasta_path``.
+
+    The binary is invoked by its **absolute path**, so it works regardless of
+    the caller's active environment: localcolabfold and conda installs ship a
+    ``colabfold_batch`` whose shebang points at their own interpreter, so no
+    ``export PATH`` / ``conda activate`` is required. ColabFold's own output is
+    streamed straight to the terminal (not captured) so the user sees its
+    progress live.
+
+    Parameters
+    ----------
+    binary
+        Absolute path to a ``colabfold_batch`` binary, as returned by
+        :func:`find_colabfold_installs`.
+    fasta_path
+        Input receptor FASTA.
+    output_dir
+        Directory ColabFold writes its PDBs + ``log.txt`` into.
+    num_models, num_recycle
+        Passed through as ``--num-models`` / ``--num-recycle``. Defaults match
+        the pipeline's documented invocation (1 model, 1 recycle).
+    extra_args
+        Optional extra CLI arguments inserted before the positional
+        input/output (e.g. ``["--amber"]``).
+
+    Returns
+    -------
+    int
+        The subprocess exit code (``0`` on success). If the binary cannot be
+        executed at all (missing / not executable), returns ``127`` after
+        printing an error — mirroring a shell "command not found".
+    """
+    cmd = build_colabfold_command(
+        binary,
+        fasta_path,
+        output_dir,
+        num_models=num_models,
+        num_recycle=num_recycle,
+        extra_args=extra_args,
+    )
+    try:
+        completed = subprocess.run(cmd, check=False)
+    except OSError as exc:
+        print(f"Failed to execute {binary}: {exc}")
+        return 127
+    return completed.returncode
 
 
 def format_activation_hint(install_path: Path) -> str:

@@ -11,8 +11,11 @@ This invocation:
 2. Checks whether ColabFold has already been run for these receptors.
    * If yes (the ``intermediate_files/receptor_only/log.txt`` is present),
      continues to step 3 silently.
-   * If no, prints the exact ``colabfold_batch`` command the user should
-     run next, and exits with a non-zero code so the workflow stops cleanly.
+   * If no, but a ``colabfold_batch`` install is discoverable on the host,
+     runs it automatically (by absolute path, so no env activation is
+     needed) and continues to step 3 with the fresh outputs.
+   * If no install can be found, prints the exact ``colabfold_batch``
+     command to run next and exits non-zero so the workflow stops cleanly.
 3. Runs the structure-stage (LRR-annotation), B-factor analysis,
    test-data assembly, and chemical-features stages in sequence, producing
    ``intermediate_files/ready_test_data.csv`` ready for model evaluation.
@@ -70,6 +73,9 @@ _USAGE_EXAMPLES = """\
 Example usage
 -------------
 
+  # Smoke-test your install on the bundled sample (no data of your own needed)
+  mamp-ml predict --example --device cuda
+
   # Full pipeline: spreadsheet -> predictions.csv
   mamp-ml predict input_data.xlsx --device cuda
 
@@ -111,9 +117,10 @@ def _build_parser() -> argparse.ArgumentParser:
             "generation, structure-stage post-processing, LRR-domain FASTA "
             "assembly, B-factor bandpass analysis, test-data assembly, and "
             "chemical-feature annotation. If ColabFold has not been run yet "
-            "the command writes the receptor FASTA, prints the colabfold_batch "
-            "invocation, and exits cleanly so the user can run ColabFold and "
-            "re-invoke this command."
+            "the command auto-runs a discovered colabfold_batch install (or, "
+            "if none is found, writes the receptor FASTA and prints the "
+            "colabfold_batch invocation, exiting cleanly so the user can run "
+            "ColabFold and re-invoke this command)."
         ),
     )
     sp.add_argument("xlsx", help="Path to input .xlsx file")
@@ -161,10 +168,10 @@ def _build_parser() -> argparse.ArgumentParser:
         default="colabfold",
         choices=["colabfold", "esmfold"],
         help=(
-            "Structure-prediction tool to use. `colabfold` (default) expects "
-            "the user to run colabfold_batch externally; the command exits "
-            "with a hint when the outputs aren't present. `esmfold` "
-            "auto-runs HuggingFace facebook/esmfold_v1 in-process "
+            "Structure-prediction tool to use. `colabfold` (default) auto-runs "
+            "a discovered colabfold_batch install when its outputs are missing "
+            "(falling back to a copy-paste hint only when none is found). "
+            "`esmfold` auto-runs HuggingFace facebook/esmfold_v1 in-process "
             "(requires `pip install mamp-ml[esmfold]`)."
         ),
     )
@@ -204,6 +211,37 @@ def _build_parser() -> argparse.ArgumentParser:
             "Useful on cluster hosts where ColabFold is already installed "
             "but the user doesn't know where."
         ),
+    )
+
+    # example (drop the bundled sample dataset) ---------------------------
+    sp = sub.add_parser(
+        "example",
+        help="Copy the bundled example_data.xlsx sample into the current dir.",
+        description=(
+            "Writes the example_data.xlsx sample that ships inside the "
+            "installed package into the working directory so a pip-installed "
+            "user can smoke-test their install without cloning the repo:\n\n"
+            "  mamp-ml example\n"
+            "  mamp-ml predict example_data.xlsx --device cuda\n\n"
+            "Pass --path to print the bundled file's location instead of "
+            "copying it (handy for scripting)."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sp.add_argument(
+        "--out-dir",
+        default=".",
+        help="Directory to copy the sample into (default: current directory).",
+    )
+    sp.add_argument(
+        "--path",
+        action="store_true",
+        help="Print the bundled sample's absolute path and exit (no copy).",
+    )
+    sp.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing example_data.xlsx in the target directory.",
     )
 
     # fold (standalone folding step) --------------------------------------
@@ -281,14 +319,32 @@ def _build_parser() -> argparse.ArgumentParser:
             "Runs `prepare` to produce ready_test_data.csv, then loads the "
             "bundled MAMP-ml checkpoint and runs ESM-2 inference, writing "
             "the predictions CSV the user actually wants. If ColabFold has "
-            "not been run yet the command prints the colabfold_batch "
-            "invocation and exits cleanly so the user can run ColabFold "
-            "and re-invoke this command."
+            "not been run yet the command auto-runs a discovered "
+            "colabfold_batch install (or prints the invocation and exits "
+            "cleanly when none is found, so the user can run ColabFold and "
+            "re-invoke this command)."
         ),
         epilog=_USAGE_EXAMPLES,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    sp.add_argument("xlsx", help="Path to input .xlsx file")
+    sp.add_argument(
+        "xlsx",
+        nargs="?",
+        default=None,
+        help=(
+            "Path to input .xlsx file. Omit and pass --example to run on the "
+            "bundled sample dataset instead."
+        ),
+    )
+    sp.add_argument(
+        "--example",
+        action="store_true",
+        help=(
+            "Run on the example_data.xlsx sample bundled inside the package so "
+            "you can smoke-test your install without supplying real data. "
+            "Overrides the xlsx positional if both are given."
+        ),
+    )
     sp.add_argument(
         "--out-dir",
         default="intermediate_files",
@@ -341,9 +397,10 @@ def _build_parser() -> argparse.ArgumentParser:
         default="colabfold",
         choices=["colabfold", "esmfold"],
         help=(
-            "Structure-prediction tool (default: colabfold). Set to "
-            "`esmfold` to auto-run facebook/esmfold_v1 in-process instead "
-            "of waiting for colabfold_batch outputs."
+            "Structure-prediction tool (default: colabfold, which auto-runs a "
+            "discovered colabfold_batch install when its outputs are missing). "
+            "Set to `esmfold` to auto-run facebook/esmfold_v1 in-process "
+            "instead."
         ),
     )
     sp.add_argument(
@@ -562,32 +619,64 @@ def _run_prepare(args) -> int:
             from mamp_ml.fold.colabfold import (
                 find_colabfold_installs,
                 format_activation_hint,
+                run_colabfold_batch,
             )
 
-            print()
-            print("ColabFold has not been run yet for this input.")
             existing = find_colabfold_installs()
             if existing:
+                # A reachable colabfold_batch was found -> just run it. The
+                # binary is invoked by absolute path, so no `export PATH` /
+                # `conda activate` is needed even when it lives in another env.
+                binary, source = existing[0]
                 print()
                 print(
-                    f"Found {len(existing)} existing colabfold_batch install(s) on this system:"
+                    "ColabFold output is missing; running the discovered "
+                    "colabfold_batch automatically:"
                 )
-                for path, source in existing:
-                    print(f"  {path}  ({source})")
+                print(f"  {binary}  ({source})")
+                if len(existing) > 1:
+                    print(
+                        f"  ({len(existing) - 1} other install(s) found; the "
+                        "$PATH-preferred one above is used. Re-order $PATH to "
+                        "prefer a different one, or run `mamp-ml find-colabfold` "
+                        "to list them.)"
+                    )
                 print()
-                print(
-                    "Activate the one you want to use, then run colabfold_batch on the "
-                    "receptor FASTA produced above and re-invoke this command. For example:"
+                rc = run_colabfold_batch(
+                    binary,
+                    receptor_fasta,
+                    colabfold_dir,
+                    num_models=1,
+                    num_recycle=1,
                 )
+                if rc != 0:
+                    print()
+                    print(
+                        f"ColabFold exited with status {rc} (see its output "
+                        "above). Fix the error and re-run this command, or run "
+                        "ColabFold manually:"
+                    )
+                    print(f"  {format_activation_hint(binary)}")
+                    print(
+                        f"  colabfold_batch --num-models 1 --num-recycle 1 \\\n"
+                        f"      {receptor_fasta} \\\n"
+                        f"      {colabfold_dir}"
+                    )
+                    return 2
+                if not log_path.is_file():
+                    print()
+                    print(
+                        "ColabFold finished (status 0) but wrote no log.txt to "
+                        f"{colabfold_dir}; cannot continue. Check ColabFold's "
+                        "output above for warnings."
+                    )
+                    return 2
                 print()
-                preferred = existing[0][0]
-                print(f"  {format_activation_hint(preferred)}")
-                print(
-                    f"  colabfold_batch --num-models 1 --num-recycle 1 \\\n"
-                    f"      {receptor_fasta} \\\n"
-                    f"      {colabfold_dir}"
-                )
+                print(f"ColabFold finished -> {colabfold_dir}")
+                # Fall through to the structure stage with the fresh outputs.
             else:
+                print()
+                print("ColabFold has not been run yet for this input.")
                 print(
                     "Run ColabFold on the receptor FASTA above, then re-invoke "
                     "this command. Suggested invocation:"
@@ -607,7 +696,7 @@ def _run_prepare(args) -> int:
                     "Run `mamp-ml find-colabfold` later if you install or "
                     "load a ColabFold module.)"
                 )
-            return 2
+                return 2
 
     # ---- Stage 2/6 ----
     n_lrr = run_structure_stage(
@@ -684,6 +773,21 @@ def _run_predict(args) -> int:
         ``mamp_ml.train.main`` returns (typically None, treated as 0).
     """
     from pathlib import Path
+
+    # Resolve the input spreadsheet: --example swaps in the bundled sample so
+    # pip users can smoke-test their install with no data of their own. A bare
+    # `predict` with neither a path nor --example is a usage error.
+    if getattr(args, "example", False):
+        from mamp_ml import example_data_path
+
+        args.xlsx = str(example_data_path())
+        print(f"Using bundled example dataset: {args.xlsx}")
+    elif not args.xlsx:
+        print(
+            "Error: no input spreadsheet given. Pass a path to an .xlsx file, "
+            "or use --example to run on the bundled sample dataset."
+        )
+        return 2
 
     # The prepare args parser declares a superset of what we need here, but
     # the same attribute names — so feed args directly into _run_prepare
@@ -872,6 +976,56 @@ def _run_find_colabfold(args) -> int:
     return 0
 
 
+def _run_example(args) -> int:
+    """Implementation of ``python -m mamp_ml example``.
+
+    Copies the bundled ``example_data.xlsx`` into ``--out-dir`` (cwd by
+    default) so a pip-installed user can try the pipeline without cloning the
+    repo, or — with ``--path`` — just prints where the bundled file lives.
+
+    Returns
+    -------
+    int
+        ``0`` on success (file copied, already present, or path printed),
+        ``1`` if the target already exists and ``--force`` was not given,
+        ``3`` if the bundled sample is missing (a broken install).
+    """
+    import shutil
+    from pathlib import Path
+
+    from mamp_ml import example_data_path
+
+    try:
+        source = example_data_path()
+    except FileNotFoundError as exc:
+        print(f"Error: {exc}")
+        return 3
+
+    if args.path:
+        # Scripting hook: `mamp-ml predict "$(mamp-ml example --path)"`.
+        print(source)
+        return 0
+
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    target = out_dir / source.name
+
+    if target.exists() and not args.force:
+        print(
+            f"{target} already exists; not overwriting. "
+            "Pass --force to replace it, or --path to print the bundled "
+            "sample's location instead."
+        )
+        return 1
+
+    shutil.copyfile(source, target)
+    print(f"Wrote {source.name} to {target}")
+    print()
+    print("Try the pipeline on it with:")
+    print(f"  mamp-ml predict {target} --device cuda")
+    return 0
+
+
 def _run_fold(args) -> int:
     """Implementation of ``python -m mamp_ml fold``.
 
@@ -941,6 +1095,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.cmd == "find-colabfold":
         return _run_find_colabfold(args)
+
+    if args.cmd == "example":
+        return _run_example(args)
 
     if args.cmd == "prepare-fasta":
         from mamp_ml.preprocess import xlsx_to_receptor_fasta

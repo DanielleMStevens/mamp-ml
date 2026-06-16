@@ -15,8 +15,10 @@ from pathlib import Path
 import pytest
 
 from mamp_ml.fold.colabfold import (
+    build_colabfold_command,
     find_colabfold_installs,
     format_activation_hint,
+    run_colabfold_batch,
 )
 
 
@@ -156,6 +158,97 @@ def test_search_tolerates_permission_errors(monkeypatch, tmp_path: Path) -> None
     finally:
         # Restore so pytest can clean up the tmp dir.
         os.chmod(blocked / "envs", 0o700)
+
+
+# ---------------------------------------------------------------------------
+# build_colabfold_command / run_colabfold_batch
+# ---------------------------------------------------------------------------
+
+
+def test_build_colabfold_command_layout(tmp_path: Path) -> None:
+    """The argv puts flags first and the positional input/output last, exactly
+    as ColabFold expects."""
+    binary = tmp_path / "colabfold_batch"
+    cmd = build_colabfold_command(
+        binary, tmp_path / "in.fasta", tmp_path / "out", num_models=1, num_recycle=1
+    )
+    assert cmd == [
+        str(binary),
+        "--num-models",
+        "1",
+        "--num-recycle",
+        "1",
+        str(tmp_path / "in.fasta"),
+        str(tmp_path / "out"),
+    ]
+
+
+def test_build_colabfold_command_inserts_extra_args(tmp_path: Path) -> None:
+    """extra_args land before the positional input/output."""
+    cmd = build_colabfold_command(
+        "colabfold_batch",
+        "in.fasta",
+        "out",
+        num_models=2,
+        num_recycle=3,
+        extra_args=["--amber"],
+    )
+    assert cmd == [
+        "colabfold_batch",
+        "--num-models",
+        "2",
+        "--num-recycle",
+        "3",
+        "--amber",
+        "in.fasta",
+        "out",
+    ]
+
+
+def test_run_colabfold_batch_invokes_subprocess_and_returns_code(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """run_colabfold_batch shells out by absolute path and propagates the exit
+    code; output is streamed (not captured)."""
+    import subprocess
+    import mamp_ml.fold.colabfold as cf
+
+    recorded: dict = {}
+
+    class _Completed:
+        returncode = 7
+
+    def fake_run(cmd, check=False):
+        recorded["cmd"] = cmd
+        recorded["check"] = check
+        return _Completed()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    binary = tmp_path / "bin" / "colabfold_batch"
+    rc = run_colabfold_batch(binary, tmp_path / "in.fasta", tmp_path / "out")
+    assert rc == 7
+    assert recorded["cmd"][0] == str(binary)
+    assert recorded["check"] is False
+    # No stdout/stderr capture kwargs -> ColabFold streams to the terminal.
+    assert recorded["cmd"][-2:] == [str(tmp_path / "in.fasta"), str(tmp_path / "out")]
+
+
+def test_run_colabfold_batch_returns_127_when_binary_unexecutable(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    """If the binary can't be launched (OSError), we return 127 and explain."""
+    import subprocess
+    import mamp_ml.fold.colabfold as cf
+
+    def boom(cmd, check=False):
+        raise OSError("Exec format error")
+
+    monkeypatch.setattr(subprocess, "run", boom)
+
+    rc = run_colabfold_batch(tmp_path / "colabfold_batch", "in.fasta", "out")
+    assert rc == 127
+    assert "Failed to execute" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------

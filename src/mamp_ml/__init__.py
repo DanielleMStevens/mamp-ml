@@ -11,7 +11,47 @@ checkpoints. See README.md for the current usage instructions.
 
 from __future__ import annotations
 
-__all__ = ["__version__"]
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+__all__ = ["__version__", "example_data_path"]
+
+
+def example_data_path() -> "Path":
+    """Return the filesystem path to the bundled ``example_data.xlsx`` sample.
+
+    This is the same spreadsheet referenced throughout the README; it ships
+    inside the installed package so a ``pip install mamp-ml`` user can smoke-
+    test their install without cloning the repo::
+
+        mamp-ml predict --example
+
+    Returns
+    -------
+    pathlib.Path
+        Absolute path to the bundled ``example_data.xlsx``.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the file is missing from the install (a packaging error).
+    """
+    from importlib import resources
+    from pathlib import Path
+
+    # `resources.files` (Python 3.9+) returns a Traversable rooted at the
+    # installed `mamp_ml.examples` package; for a regular wheel / editable
+    # install this resolves to a real on-disk path.
+    resource = resources.files("mamp_ml.examples") / "example_data.xlsx"
+    path = Path(str(resource))
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"Bundled example_data.xlsx not found at {path}; this indicates a "
+            "broken install. Reinstall mamp-ml, or pass an explicit .xlsx path."
+        )
+    return path
 
 # Version is kept in lock-step with pyproject.toml's `[project] version`.
 # Single source-of-truth via importlib.metadata would require the package to

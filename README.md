@@ -46,6 +46,16 @@ This installs the Python package (mamp-ml + pretrained weights bundled) and Cola
 pip install git+https://github.com/DanielleMStevens/mamp-ml.git@version2
 ```
 
+The sample spreadsheet ships inside the package, so you can grab a local copy to inspect the expected input format (or to smoke-test the install) without cloning the repo:
+```
+mamp-ml example                          # writes example_data.xlsx into the current directory
+mamp-ml predict example_data.xlsx --device cuda
+```
+Or run the whole pipeline directly on the bundled sample in one step:
+```
+mamp-ml predict --example --device cuda
+```
+
 Please prepare an excel file in the following format (see example_data.xlsx as an example):
 ```
 plant_species | receptor | locus_id | receptor_sequence | ligand_sequence
@@ -56,7 +66,7 @@ Once your excel file is prepared, the full pipeline runs in a single command:
 mamp-ml predict input_data.xlsx --device cuda
 ```
 
-The first invocation generates the receptor FASTA, then exits with the colabfold_batch command for you to run; once ColabFold has produced the structures, re-invoke the command and the rest of the pipeline (LRR annotation, B-factor analysis, chemical features, ESM-2 inference) runs end-to-end.
+The first invocation generates the receptor FASTA, then folds the receptors: if a `colabfold_batch` install is found on the system it is run automatically, otherwise the command prints the exact `colabfold_batch` invocation for you to run and exits. Once ColabFold has produced the structures, the rest of the pipeline (LRR annotation, B-factor analysis, chemical features, ESM-2 inference) runs end-to-end.
 
 Alternatively, ESMFold can fold the receptors in-process without a separate ColabFold install:
 ```

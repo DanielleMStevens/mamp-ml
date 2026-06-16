@@ -90,10 +90,16 @@ def test_predict_help_renders() -> None:
 
 
 def test_predict_gates_on_missing_colabfold(
-    tmp_path: Path, example_xlsx: Path, capsys
+    tmp_path: Path, example_xlsx: Path, capsys, monkeypatch
 ) -> None:
-    """`predict` reuses prepare's ColabFold gate: when fold output is missing,
-    write the receptor FASTA, print the colabfold_batch hint, exit cleanly."""
+    """`predict` reuses prepare's ColabFold gate: when fold output is missing
+    AND no colabfold_batch is installed, write the receptor FASTA, print the
+    colabfold_batch hint, exit cleanly."""
+    # Deterministically exercise the "not installed" branch.
+    import mamp_ml.fold.colabfold as cf
+
+    monkeypatch.setattr(cf, "find_colabfold_installs", lambda: [])
+
     out_dir = tmp_path / "inter"
     rc = cli_main(
         ["predict", str(example_xlsx), "--out-dir", str(out_dir)]

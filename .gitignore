@@ -32,3 +32,9 @@ __pycache__/
 # the input spreadsheet — never check in.
 intermediate_files/
 logs/
+
+# Packaging / build artifacts (created by `pip install -e .`)
+*.egg-info/
+
+# Structure-stage geometry cache (default --structure-cache-dir; derivable)
+LRR_Annotation/

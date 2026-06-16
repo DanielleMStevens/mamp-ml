@@ -204,13 +204,20 @@ def test_cli_no_subcommand_errors() -> None:
 
 
 def test_cli_prepare_gates_on_missing_colabfold(
-    tmp_path: Path, example_xlsx: Path, capsys
+    tmp_path: Path, example_xlsx: Path, capsys, monkeypatch
 ) -> None:
-    """When ColabFold has not been run yet, ``prepare`` must:
+    """When ColabFold is *not installed* and has not been run yet, ``prepare``
+    must:
     - write the receptor FASTA (stage 1),
     - print the suggested colabfold_batch invocation,
     - exit cleanly with code 2 so a CI pipeline can detect "needs colabfold".
     """
+    # Force the "nothing installed" branch deterministically (the host running
+    # the test suite may legitimately have colabfold_batch installed).
+    import mamp_ml.fold.colabfold as cf
+
+    monkeypatch.setattr(cf, "find_colabfold_installs", lambda: [])
+
     out_dir = tmp_path / "inter"
     rc = cli_main(
         ["prepare", str(example_xlsx), "--out-dir", str(out_dir)]
@@ -221,7 +228,94 @@ def test_cli_prepare_gates_on_missing_colabfold(
     # User-facing hint surfaces the colabfold_batch command.
     captured = capsys.readouterr()
     assert "colabfold_batch" in captured.out
+    assert "has not been run yet" in captured.out
     # No downstream artefacts should have been created.
+    assert not (out_dir / "alphafold_scores.txt").exists()
+
+
+def test_cli_prepare_auto_runs_discovered_colabfold(
+    tmp_path: Path,
+    example_xlsx: Path,
+    colabfold_outputs_dir: Path,
+    capsys,
+    monkeypatch,
+) -> None:
+    """When a colabfold_batch install IS found, ``prepare`` runs it
+    automatically (no manual re-invocation) and continues the pipeline with the
+    freshly produced outputs."""
+    import shutil
+
+    import mamp_ml.fold.colabfold as cf
+
+    fake_binary = tmp_path / "localcolabfold" / "bin" / "colabfold_batch"
+    monkeypatch.setattr(
+        cf, "find_colabfold_installs", lambda: [(fake_binary, "on $PATH")]
+    )
+
+    captured_call: dict = {}
+
+    def fake_run(binary, fasta_path, output_dir, *, num_models, num_recycle, **kw):
+        # Simulate a successful ColabFold run by dropping the golden fixture
+        # outputs into the requested directory, then report success.
+        captured_call["binary"] = binary
+        captured_call["fasta"] = fasta_path
+        captured_call["output_dir"] = output_dir
+        captured_call["num_models"] = num_models
+        captured_call["num_recycle"] = num_recycle
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        for f in colabfold_outputs_dir.iterdir():
+            if f.is_file():
+                shutil.copyfile(f, out / f.name)
+        return 0
+
+    monkeypatch.setattr(cf, "run_colabfold_batch", fake_run)
+
+    out_dir = tmp_path / "inter"
+    rc = cli_main(
+        [
+            "prepare",
+            str(example_xlsx),
+            "--out-dir",
+            str(out_dir),
+            "--structure-cache-dir",
+            str(tmp_path / "fresh_cache"),
+        ]
+    )
+
+    # Pipeline ran to completion using the auto-generated outputs.
+    assert rc == 0
+    assert captured_call["binary"] == fake_binary
+    assert captured_call["num_models"] == 1
+    assert captured_call["num_recycle"] == 1
+    out = capsys.readouterr().out
+    assert "running the discovered colabfold_batch automatically" in out
+    assert "ColabFold finished ->" in out
+
+
+def test_cli_prepare_reports_colabfold_failure(
+    tmp_path: Path, example_xlsx: Path, capsys, monkeypatch
+) -> None:
+    """If the auto-run colabfold_batch exits non-zero, prepare surfaces the
+    status, prints the manual fallback, and exits 2 without running downstream
+    stages."""
+    import mamp_ml.fold.colabfold as cf
+
+    fake_binary = tmp_path / "cf" / "colabfold_batch"
+    monkeypatch.setattr(
+        cf, "find_colabfold_installs", lambda: [(fake_binary, "on $PATH")]
+    )
+    monkeypatch.setattr(
+        cf, "run_colabfold_batch", lambda *a, **k: 1
+    )
+
+    out_dir = tmp_path / "inter"
+    rc = cli_main(["prepare", str(example_xlsx), "--out-dir", str(out_dir)])
+    assert rc == 2
+    out = capsys.readouterr().out
+    assert "ColabFold exited with status 1" in out
+    assert "colabfold_batch --num-models 1" in out
+    # Downstream artefacts must not exist after a failed fold.
     assert not (out_dir / "alphafold_scores.txt").exists()
 
 
