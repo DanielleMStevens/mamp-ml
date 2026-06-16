@@ -775,6 +775,229 @@ def test_fold_with_esmfold_catches_cuda_oom_with_actionable_message(
     assert "64" in msg  # the suggested value
 
 
+# ---------------------------------------------------------------------------
+# OOM auto-backoff: chunk-size fallback ladder
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "initial, expected",
+    [
+        (None, [None, 128, 64, 32, 16, 8, 4, 2, 1]),
+        (128, [128, 64, 32, 16, 8, 4, 2, 1]),
+        (64, [64, 32, 16, 8, 4, 2, 1]),
+        (16, [16, 8, 4, 2, 1]),
+        (1, [1]),
+        (100, [100, 64, 32, 16, 8, 4, 2, 1]),  # non-ladder start still descends
+    ],
+)
+def test_chunk_fallback_sequence(initial, expected) -> None:
+    """The fallback ladder always leads with the starting size, then descends
+    through strictly-smaller ladder values."""
+    from mamp_ml.fold.esmfold import _chunk_fallback_sequence
+
+    assert _chunk_fallback_sequence(initial) == expected
+
+
+def test_is_cuda_oom_classification() -> None:
+    """OOMError and 'out of memory' RuntimeErrors are OOM; other errors aren't."""
+    import torch
+    from mamp_ml.fold.esmfold import _is_cuda_oom
+
+    assert _is_cuda_oom(torch.cuda.OutOfMemoryError("boom"), torch)
+    assert _is_cuda_oom(RuntimeError("CUDA out of memory. Tried ..."), torch)
+    assert not _is_cuda_oom(RuntimeError("shape mismatch"), torch)
+    assert not _is_cuda_oom(ValueError("nope"), torch)
+
+
+def _oom_until_chunk_factory(captured: dict, *, ok_at_or_below: int):
+    """Build a mocked (tokenizer, model) pair whose forward pass raises CUDA
+    OOM until the trunk chunk size has been lowered to ``ok_at_or_below`` (a
+    larger chunk = more VRAM = OOM). Records every chunk size set, in order."""
+    from unittest.mock import MagicMock
+
+    def fake_tokenizer_factory(model_id):
+        def tokenizer(seq, return_tensors="pt", add_special_tokens=False):
+            import torch
+            return {"input_ids": torch.zeros((1, len(seq)), dtype=torch.long)}
+        return tokenizer
+
+    def fake_model_factory(model_id):
+        state = {"chunk": None}
+        model = MagicMock()
+        model.esm = MagicMock()
+        model.esm.half.return_value = model.esm
+        model.to.return_value = model
+        model.eval.return_value = None
+        model.trunk = MagicMock()
+
+        def record_chunk(n):
+            state["chunk"] = n
+            captured.setdefault("set_calls", []).append(n)
+
+        model.trunk.set_chunk_size = record_chunk
+
+        def fake_call(**inputs):
+            import torch
+            cur = state["chunk"]
+            # None (no chunking) or anything above the threshold is too big.
+            if cur is None or cur > ok_at_or_below:
+                raise torch.cuda.OutOfMemoryError(
+                    f"Tried to allocate 2.00 GiB at chunk={cur}"
+                )
+            n = inputs["input_ids"].shape[1]
+            plddt = torch.zeros((1, n, 37), dtype=torch.float32)
+            plddt[0, :, 1] = 80.0
+            out = MagicMock()
+            out.plddt = plddt
+            return out
+
+        model.side_effect = fake_call
+        model.output_to_pdb = lambda outputs: ["MODEL     1\nEND\n"]
+        return model
+
+    return fake_tokenizer_factory, fake_model_factory
+
+
+def test_fold_with_esmfold_recovers_from_oom_by_chunking_down(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """The headline fix: an OOM at the auto-picked chunk size no longer aborts
+    the run. The backoff loop chunks down until the fold fits, writes the PDB,
+    and carries the working chunk size forward to the next sequence (so it
+    doesn't re-OOM at the larger size)."""
+    import mamp_ml.fold.esmfold as ef
+
+    _patch_tensor_to_noop(monkeypatch)
+    fasta = tmp_path / "in.fasta"
+    fasta.write_text(">R1\nACDEFGHIKLMNPQRSTVWY\n>R2\nACDEFGHIKLMNPQRSTVWY\n")
+
+    captured: dict = {}
+    tok_factory, model_factory = _oom_until_chunk_factory(captured, ok_at_or_below=16)
+    monkeypatch.setattr(
+        ef,
+        "_import_esmfold",
+        lambda: (
+            type("T", (), {"from_pretrained": staticmethod(tok_factory)}),
+            type("M", (), {"from_pretrained": staticmethod(model_factory)}),
+        ),
+    )
+    # Auto-pick starts at 64 -> OOM at 64, 32 -> succeeds at 16.
+    monkeypatch.setattr(ef, "auto_pick_chunk_size", lambda device: 64)
+
+    out_dir = tmp_path / "out"
+    pdbs = ef.fold_with_esmfold(fasta, out_dir, device="cuda")
+
+    # Both sequences folded despite the initial OOM.
+    assert len(pdbs) == 2
+    assert all(p.is_file() for p in pdbs)
+
+    # First sequence walked 64 -> 32 -> 16; the second started straight at 16
+    # (carried forward) rather than re-trying 64.
+    calls = captured["set_calls"]
+    assert calls[:3] == [64, 32, 16]
+    assert 64 not in calls[3:], (
+        f"second sequence should not retry the failed chunk 64; got {calls}"
+    )
+
+    # The user saw the retry progress lines.
+    out = capsys.readouterr().out
+    assert "CUDA OOM at chunk_size=64" in out
+    assert "retrying at chunk_size=32" in out
+
+    # log.txt is still well-formed for the structure stage.
+    from mamp_ml.structure import parse_colabfold_log
+    parsed = parse_colabfold_log(out_dir / "log.txt")
+    assert set(parsed) == {"R1", "R2"}
+
+
+def test_fold_with_esmfold_raises_when_even_smallest_chunk_ooms(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """If every chunk size down to 1 still OOMs, we raise an actionable error
+    that names the auto-retry, --chunk-size, and the CPU fallback."""
+    import mamp_ml.fold.esmfold as ef
+    import torch
+
+    _patch_tensor_to_noop(monkeypatch)
+    fasta = tmp_path / "in.fasta"
+    fasta.write_text(">R\nACDEFGHIKLMNPQRSTVWY\n")
+
+    captured: dict = {}
+    # ok_at_or_below=0 -> nothing in the ladder (>=1) ever fits.
+    tok_factory, model_factory = _oom_until_chunk_factory(captured, ok_at_or_below=0)
+    monkeypatch.setattr(
+        ef,
+        "_import_esmfold",
+        lambda: (
+            type("T", (), {"from_pretrained": staticmethod(tok_factory)}),
+            type("M", (), {"from_pretrained": staticmethod(model_factory)}),
+        ),
+    )
+    monkeypatch.setattr(ef, "auto_pick_chunk_size", lambda device: 64)
+
+    with pytest.raises(torch.cuda.OutOfMemoryError) as exc_info:
+        ef.fold_with_esmfold(fasta, tmp_path / "out", device="cuda")
+    msg = str(exc_info.value)
+    assert "retrying down to chunk_size=1" in msg
+    assert "--chunk-size" in msg
+    assert "--device cpu" in msg
+    # It exhausted the whole ladder from the auto-picked 64.
+    assert captured["set_calls"] == [64, 32, 16, 8, 4, 2, 1]
+
+
+def test_fold_with_esmfold_non_oom_error_propagates_without_retry(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A non-OOM RuntimeError must surface immediately — the backoff loop only
+    swallows out-of-memory failures, never genuine bugs."""
+    from unittest.mock import MagicMock
+    import mamp_ml.fold.esmfold as ef
+
+    _patch_tensor_to_noop(monkeypatch)
+    fasta = tmp_path / "in.fasta"
+    fasta.write_text(">R\nACDEFGHIKLMNPQRSTVWY\n")
+
+    set_calls: list = []
+
+    def fake_tokenizer_factory(model_id):
+        def tokenizer(seq, return_tensors="pt", add_special_tokens=False):
+            import torch
+            return {"input_ids": torch.zeros((1, len(seq)), dtype=torch.long)}
+        return tokenizer
+
+    def fake_model_factory(model_id):
+        model = MagicMock()
+        model.esm = MagicMock()
+        model.esm.half.return_value = model.esm
+        model.to.return_value = model
+        model.eval.return_value = None
+        model.trunk = MagicMock()
+        model.trunk.set_chunk_size = lambda n: set_calls.append(n)
+
+        def boom(**inputs):
+            raise RuntimeError("size mismatch in attention projection")
+
+        model.side_effect = boom
+        model.output_to_pdb = lambda outputs: [""]
+        return model
+
+    monkeypatch.setattr(
+        ef,
+        "_import_esmfold",
+        lambda: (
+            type("T", (), {"from_pretrained": staticmethod(fake_tokenizer_factory)}),
+            type("M", (), {"from_pretrained": staticmethod(fake_model_factory)}),
+        ),
+    )
+    monkeypatch.setattr(ef, "auto_pick_chunk_size", lambda device: 64)
+
+    with pytest.raises(RuntimeError, match="size mismatch"):
+        ef.fold_with_esmfold(fasta, tmp_path / "out", device="cuda")
+    # No retry ladder was walked: the very first attempt's error propagated.
+    assert set_calls == [64]
+
+
 def test_predict_subparser_accepts_keep_flag(example_xlsx: Path) -> None:
     """The predict subcommand must accept --keep with choices {default, all}."""
     from mamp_ml.__main__ import _build_parser

@@ -56,6 +56,14 @@ __all__ = [
 #: from the N-terminus before folding.
 ESMFOLD_MAX_LENGTH: int = 1024
 
+#: Descending ladder of trunk chunk sizes the OOM-backoff loop falls through
+#: when a forward pass runs out of GPU memory. Smaller chunks lower the
+#: triangular-attention activation peak at the cost of wall-clock; 1 is the
+#: slowest-but-leanest setting ESMFold supports. We start from whatever chunk
+#: size was chosen (auto-picked, user-supplied, or ``None`` = no chunking) and
+#: only try strictly smaller values from this ladder.
+_OOM_FALLBACK_LADDER: Tuple[int, ...] = (128, 64, 32, 16, 8, 4, 2, 1)
+
 
 def _now_str() -> str:
     """Timestamp prefix matching the format ColabFold writes into log.txt."""
@@ -266,6 +274,128 @@ def _import_esmfold():
     return AutoTokenizer, EsmForProteinFolding
 
 
+def _chunk_fallback_sequence(initial: "int | None") -> "List[int | None]":
+    """Build the ordered list of trunk chunk sizes to attempt on OOM.
+
+    The first element is always ``initial`` (the chunk size we'd use absent
+    any memory pressure — possibly ``None`` to mean "no chunking"). Each
+    subsequent element is a value from :data:`_OOM_FALLBACK_LADDER` strictly
+    smaller than ``initial``, in descending order. ``None`` is treated as
+    "larger than any concrete chunk size", so a ``None`` start falls through
+    the entire ladder.
+
+    Examples
+    --------
+    >>> _chunk_fallback_sequence(None)
+    [None, 128, 64, 32, 16, 8, 4, 2, 1]
+    >>> _chunk_fallback_sequence(64)
+    [64, 32, 16, 8, 4, 2, 1]
+    >>> _chunk_fallback_sequence(1)
+    [1]
+    """
+    seq: List["int | None"] = [initial]
+    for candidate in _OOM_FALLBACK_LADDER:
+        if initial is None or candidate < initial:
+            seq.append(candidate)
+    return seq
+
+
+def _is_cuda_oom(exc: BaseException, torch) -> bool:
+    """True if ``exc`` is (or reads as) a CUDA out-of-memory error.
+
+    ``torch.cuda.OutOfMemoryError`` (torch >= 1.13) is matched directly. Older
+    torch builds — and some code paths — surface OOM as a plain
+    ``RuntimeError`` whose message contains "out of memory", so we match that
+    too. Anything else is a genuine failure and must propagate unchanged.
+    """
+    if isinstance(exc, torch.cuda.OutOfMemoryError):
+        return True
+    return isinstance(exc, RuntimeError) and "out of memory" in str(exc).lower()
+
+
+def _free_cuda_memory(torch) -> None:
+    """Return the allocator's cached blocks to the driver between retries.
+
+    Best-effort: guarded so it is a no-op on CPU/MPS hosts and never masks the
+    original OOM with a secondary error.
+    """
+    try:
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
+def _forward_with_oom_backoff(
+    model,
+    inputs,
+    *,
+    receptor_name: str,
+    padded_length: int,
+    initial_chunk_size: "int | None",
+    can_chunk: bool,
+    torch,
+) -> "Tuple[object, int | None]":
+    """Run ``model(**inputs)`` once, retrying smaller chunk sizes on CUDA OOM.
+
+    Starting from ``initial_chunk_size`` we attempt the forward pass; on a CUDA
+    out-of-memory error we free the allocator cache, drop to the next smaller
+    chunk size from :func:`_chunk_fallback_sequence`, and retry. Only when the
+    whole ladder is exhausted do we raise an actionable
+    ``torch.cuda.OutOfMemoryError``.
+
+    Returns the model outputs together with the chunk size that actually
+    succeeded, so the caller can start the next sequence from that lower size
+    instead of re-discovering the ceiling each time.
+
+    When ``can_chunk`` is False (the installed transformers exposes no
+    ``trunk.set_chunk_size``) there is no lever to pull, so we make a single
+    attempt and propagate any OOM.
+    """
+    attempts = (
+        _chunk_fallback_sequence(initial_chunk_size)
+        if can_chunk
+        else [initial_chunk_size]
+    )
+    last_exc: "BaseException | None" = None
+
+    for i, chunk in enumerate(attempts):
+        if can_chunk and chunk is not None:
+            model.trunk.set_chunk_size(chunk)
+        try:
+            with torch.no_grad():
+                outputs = model(**inputs)
+            return outputs, chunk
+        except Exception as exc:  # noqa: BLE001 -- re-raised unless it is OOM
+            if not _is_cuda_oom(exc, torch):
+                raise
+            last_exc = exc
+            _free_cuda_memory(torch)
+            if i + 1 < len(attempts):
+                nxt = attempts[i + 1]
+                cur_label = chunk if chunk is not None else "disabled"
+                print(
+                    f"  ! {receptor_name}: CUDA OOM at chunk_size={cur_label}; "
+                    f"retrying at chunk_size={nxt} (lower peak VRAM, slower)..."
+                )
+
+    retried = (
+        f" even after automatically retrying down to chunk_size={attempts[-1]}"
+        if can_chunk and len(attempts) > 1
+        else ""
+    )
+    raise torch.cuda.OutOfMemoryError(
+        f"{receptor_name}: ESMFold ran out of GPU memory at "
+        f"length={padded_length}{retried}. ESMFold's full-precision trunk "
+        "needs ~17 GB VRAM at the 1024-AA cap, which exceeds this GPU's free "
+        "memory for this sequence length. Options: free other processes on "
+        "this GPU, use a larger-memory GPU, or fall back to CPU with "
+        "`--device cpu` (much slower but works). You can also force a "
+        "specific chunk size with `--chunk-size 64` (or 32). "
+        f"Original message: {last_exc}"
+    ) from last_exc
+
+
 def fold_with_esmfold(
     fasta_path: PathLike,
     output_dir: PathLike,
@@ -368,24 +498,35 @@ def fold_with_esmfold(
 
     # Trunk chunking dramatically reduces peak VRAM in the folding trunk's
     # triangular-attention layers at the cost of some wall-clock. ESMFold
-    # exposes this via `model.trunk.set_chunk_size(N)`.
+    # exposes this via `model.trunk.set_chunk_size(N)`. We detect the API once
+    # here; the size is actually applied per-sequence inside
+    # `_forward_with_oom_backoff`, so the OOM-backoff loop can keep lowering it
+    # when a fold still doesn't fit.
+    can_chunk = hasattr(model.trunk, "set_chunk_size")
+    if not can_chunk and chunk_size is not None:
+        warnings.warn(
+            "Installed transformers version does not expose "
+            "`model.trunk.set_chunk_size`; chunk-size ignored.",
+            stacklevel=2,
+        )
+        chunk_size = None
+
     if chunk_size is not None:
-        try:
-            model.trunk.set_chunk_size(chunk_size)
-            print(f"  (ESMFold trunk chunk size: {chunk_size} [{chunk_size_source}])")
-        except AttributeError:
-            warnings.warn(
-                "Installed transformers version does not expose "
-                "`model.trunk.set_chunk_size`; chunk-size ignored.",
-                stacklevel=2,
-            )
+        print(f"  (ESMFold trunk chunk size: {chunk_size} [{chunk_size_source}])")
     elif device.startswith("cuda"):
-        # CUDA with >= 24 GB free -> no chunking, full speed. Worth
-        # surfacing so the user knows the auto-pick decided to skip.
+        # CUDA with >= 24 GB free -> no chunking, full speed. Worth surfacing
+        # so the user knows the auto-pick decided to skip. If this proves too
+        # optimistic for the actual sequence length, the OOM-backoff loop below
+        # still kicks in and chunks down automatically.
         print("  (ESMFold trunk chunking: disabled — >= 24 GB free VRAM)")
 
     log_records: List[Tuple[str, int, int, float, float]] = []
     pdbs_written: List[Path] = []
+
+    # Once a fold succeeds at a reduced chunk size, the GPU has effectively
+    # told us its ceiling for this run; start subsequent sequences from there
+    # rather than re-discovering the same OOM each time.
+    effective_chunk_size = chunk_size
 
     for header, sequence in records:
         receptor_name = normalize_receptor_name(header)
@@ -402,22 +543,20 @@ def fold_with_esmfold(
         inputs = tokenizer(sequence, return_tensors="pt", add_special_tokens=False)
         inputs = {k: v.to(device) for k, v in inputs.items()}
 
-        try:
-            with torch.no_grad():
-                outputs = model(**inputs)
-        except torch.cuda.OutOfMemoryError as exc:
-            # The trunk's triangular attention scales quadratically with
-            # sequence length; a 1024-AA fold needs ~17 GB VRAM without
-            # chunking. Most cluster GPUs don't have that much free.
-            raise torch.cuda.OutOfMemoryError(
-                f"{receptor_name}: ESMFold ran out of GPU memory at "
-                f"length={padded_length}. ESMFold's full-precision trunk "
-                "needs ~17 GB VRAM at the 1024-AA cap. Pass "
-                "`--chunk-size 64` (or 32) on the CLI to split the trunk's "
-                "triangular attention into chunks; this dramatically lowers "
-                "peak VRAM at the cost of some wall-clock. "
-                f"Original message: {exc}"
-            ) from exc
+        # The trunk's triangular attention scales quadratically with sequence
+        # length; a 1024-AA fold needs ~17 GB VRAM without chunking. When the
+        # GPU can't fit the current chunk size, `_forward_with_oom_backoff`
+        # frees the cache and retries at progressively smaller chunk sizes
+        # before giving up.
+        outputs, effective_chunk_size = _forward_with_oom_backoff(
+            model,
+            inputs,
+            receptor_name=receptor_name,
+            padded_length=padded_length,
+            initial_chunk_size=effective_chunk_size,
+            can_chunk=can_chunk,
+            torch=torch,
+        )
 
         # `output_to_pdb` returns one PDB string per batch element; we feed one
         # sequence at a time, so we take element 0.
