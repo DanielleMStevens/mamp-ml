@@ -78,6 +78,15 @@ mamp-ml predict input_data.xlsx --structure esmfold --device cuda
 
 A successful run produces `intermediate_files/predictions.csv` (per-row class probabilities) and `intermediate_files/lrr_annotation_plots/` (per-receptor LRR regression plots). By default the other intermediates are cleaned up; pass `--keep all` to retain them. Pass `--weights /path/to/checkpoint.pth` to predict against a custom-trained model instead of the bundled one.
 
+### Running on an HPC cluster
+
+`mamp-ml` downloads the ESM-2 weights to the HuggingFace cache, which defaults to `~/.cache/huggingface`. On clusters, HOME usually has a small quota — if you hit `OSError: [Errno 122] Disk quota exceeded`, point the cache at a roomier filesystem (e.g. scratch) before running:
+```
+export HF_HOME=/path/to/scratch/.cache/huggingface
+mkdir -p "$HF_HOME"
+```
+Add that line to your `~/.bashrc` to make it permanent. (`mamp-ml predict` detects this error and prints the same guidance.)
+
 ## Computational requirements:
 
 To run this package locally, we recommend having a CUDA-capable NVIDIA GPU and at least 16 GB RAM and 16 GB VRAM. The main step that is slow and memory-intensive is running the structure prediction (ColabFold/AlphaFold2 or ESMFold). While we were able to run predictions on a 1080Ti, we found considerable runtime improvements using RTX A5000 and A100 cards. For users without a local GPU, the [Google Colab notebook](https://colab.research.google.com/github/DanielleMStevens/mamp-ml/blob/version2/mamp_ml_colab.ipynb) provisions a free T4 and runs the whole pipeline end-to-end.

@@ -543,6 +543,23 @@ def _pipeline_subtitle(args) -> str:
     return "  ·  ".join(bits)
 
 
+def _is_disk_full_error(exc: OSError) -> bool:
+    """True if ``exc`` is an out-of-space / over-quota filesystem error.
+
+    Covers ``ENOSPC`` (disk full), ``EDQUOT`` (over quota — the usual HPC HOME
+    case), and a message fallback for environments that don't surface a clean
+    errno. Used to turn the HuggingFace model-download failure into an
+    actionable "point HF_HOME at scratch" message instead of a raw traceback.
+    """
+    import errno
+
+    quota_errnos = {errno.ENOSPC, errno.EDQUOT}
+    if getattr(exc, "errno", None) in quota_errnos:
+        return True
+    message = str(exc).lower()
+    return "quota exceeded" in message or "no space left" in message
+
+
 def _count_csv_rows(csv_path: "Path") -> int:
     """Best-effort count of data rows in a CSV (excludes the header).
 
@@ -897,6 +914,29 @@ def _run_predict(args) -> int:
     try:
         os.chdir(out_dir)
         train.main(train_args)
+    except OSError as exc:
+        if _is_disk_full_error(exc):
+            infer.fail("disk quota / no space while caching model weights")
+            print()
+            print(
+                "ESM-2 weights are downloaded to the HuggingFace cache, and the "
+                "target filesystem is out of space:"
+            )
+            print(f"  {exc}")
+            print()
+            print(
+                "On HPC clusters the default cache (~/.cache/huggingface, on a "
+                "small-quota HOME) is the usual culprit. Point it at a roomier "
+                "location (e.g. scratch) and re-run:"
+            )
+            print()
+            print("  export HF_HOME=/path/to/scratch/.cache/huggingface")
+            print('  mkdir -p "$HF_HOME"')
+            print(f"  mamp-ml predict {args.xlsx} --device {args.device}")
+            print()
+            print("Add the `export` line to your ~/.bashrc to make it permanent.")
+            return 5
+        raise
     finally:
         os.chdir(prev_cwd)
 
