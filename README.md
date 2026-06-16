@@ -76,7 +76,7 @@ pip install mamp-ml[esmfold]
 mamp-ml predict input_data.xlsx --structure esmfold --device cuda
 ```
 
-A successful run writes `predictions.csv` (per-row class probabilities) and `lrr_annotation_plots/` (per-receptor LRR regression plots) into the directory you ran the command from, and removes the `intermediate_files/` scratch directory. Pass `--keep all` to keep every intermediate in `intermediate_files/` instead (useful for debugging or re-running prediction on a different ligand spreadsheet without re-folding). Pass `--weights /path/to/checkpoint.pth` to predict against a custom-trained model instead of the bundled one.
+A successful run writes the per-row class probabilities and the per-receptor LRR regression plots into the directory you ran the command from, then removes the `intermediate_files/` working directory. By default the outputs are uniquely named so repeated runs don't overwrite each other — e.g. `output_2026-06-15_20-30-00.csv` and `output_2026-06-15_20-30-00_lrr_annotation_plots/`. Pass `--output-name myrun` to choose the name (`myrun.csv` + `myrun_lrr_annotation_plots/`). Pass `--keep all` to instead leave every intermediate in `intermediate_files/` (useful for debugging or re-running prediction on a different ligand spreadsheet without re-folding). Pass `--weights /path/to/checkpoint.pth` to predict against a custom-trained model instead of the bundled one.
 
 ### Model weights cache (and HPC quotas)
 

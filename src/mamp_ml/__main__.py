@@ -440,15 +440,26 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     sp.add_argument(
+        "--output-name",
+        default=None,
+        help=(
+            "Base name for this run's outputs: writes `<name>.csv` and "
+            "`<name>_lrr_annotation_plots/`. A trailing `.csv` is fine. "
+            "Defaults to a unique, timestamped name like "
+            "`output_2026-06-15_20-30-00` so repeated runs don't overwrite each "
+            "other. Applies to the default --keep mode."
+        ),
+    )
+    sp.add_argument(
         "--keep",
         default="default",
         choices=["default", "all"],
         help=(
             "What to keep after a successful prediction. The default promotes "
-            "the two outputs — predictions.csv and lrr_annotation_plots/ — into "
-            "the current directory and removes the intermediate_files/ scratch "
-            "dir. Pass `all` to leave every file produced by the pipeline in "
-            "--out-dir instead (useful for debugging or for re-running "
+            "the two outputs — `<output-name>.csv` and its plots dir — into the "
+            "current directory and removes the intermediate_files/ working "
+            "directory. Pass `all` to leave every file produced by the pipeline "
+            "in --out-dir instead (useful for debugging or for re-running "
             "prediction without re-folding)."
         ),
     )
@@ -644,6 +655,24 @@ def _count_csv_rows(csv_path: "Path") -> int:
     except OSError:
         return 0
     return max(0, total - 1)
+
+
+def _resolve_output_basename(args) -> str:
+    """Base name for this run's promoted outputs (``<base>.csv`` + plots dir).
+
+    Uses ``--output-name`` if given (a trailing ``.csv`` is stripped so users
+    can pass either ``run1`` or ``run1.csv``), otherwise a unique, timestamped
+    default like ``output_2026-06-15_20-30-00`` so repeated runs don't clobber
+    each other.
+    """
+    import datetime
+
+    name = getattr(args, "output_name", None)
+    if name:
+        if name.lower().endswith(".csv"):
+            name = name[:-4]
+        return name
+    return "output_" + datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
 
 def _run_prepare(args, *, progress=None) -> int:
@@ -1037,14 +1066,16 @@ def _run_predict(args) -> int:
             ("All intermediates", f"{out_dir}/"),
         ]
     else:
+        base = _resolve_output_basename(args)
         final_predictions = _promote_output(
-            predictions_csv, invocation_dir / "predictions.csv"
+            predictions_csv, invocation_dir / f"{base}.csv"
         )
         final_plots = _promote_output(
-            plots_dir, invocation_dir / "lrr_annotation_plots"
+            plots_dir, invocation_dir / f"{base}_lrr_annotation_plots"
         )
-        # Remove the scratch dir now that the deliverables are out of it —
-        # unless the user pointed --out-dir at the invocation dir itself.
+        # Remove the intermediate_files working directory now that the
+        # deliverables are out of it — unless the user pointed --out-dir at the
+        # invocation dir itself.
         if out_dir.resolve() != invocation_dir.resolve():
             import shutil
 
