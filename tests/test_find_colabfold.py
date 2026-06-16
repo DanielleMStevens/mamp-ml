@@ -218,9 +218,10 @@ def test_run_colabfold_batch_invokes_subprocess_and_returns_code(
     class _Completed:
         returncode = 7
 
-    def fake_run(cmd, check=False):
+    def fake_run(cmd, check=False, env=None):
         recorded["cmd"] = cmd
         recorded["check"] = check
+        recorded["env"] = env
         return _Completed()
 
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -232,6 +233,52 @@ def test_run_colabfold_batch_invokes_subprocess_and_returns_code(
     assert recorded["check"] is False
     # No stdout/stderr capture kwargs -> ColabFold streams to the terminal.
     assert recorded["cmd"][-2:] == [str(tmp_path / "in.fasta"), str(tmp_path / "out")]
+    # quiet=True (default) -> the log-suppressing env vars are injected.
+    assert recorded["env"]["TF_CPP_MIN_LOG_LEVEL"] == "3"
+    assert recorded["env"]["GRPC_VERBOSITY"] == "ERROR"
+    assert recorded["env"]["GLOG_minloglevel"] == "3"
+
+
+def test_run_colabfold_batch_quiet_does_not_clobber_user_env(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A log level the user already set in their environment must win over our
+    default — we only fill in missing values."""
+    import subprocess
+
+    monkeypatch.setenv("TF_CPP_MIN_LOG_LEVEL", "0")  # user wants verbose TF logs
+    recorded: dict = {}
+
+    class _Completed:
+        returncode = 0
+
+    def fake_run(cmd, check=False, env=None):
+        recorded["env"] = env
+        return _Completed()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    run_colabfold_batch(tmp_path / "colabfold_batch", "in.fasta", "out")
+    assert recorded["env"]["TF_CPP_MIN_LOG_LEVEL"] == "0"  # user value preserved
+
+
+def test_run_colabfold_batch_quiet_false_passes_no_env(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """quiet=False leaves the child env untouched (inherits the parent's)."""
+    import subprocess
+
+    recorded: dict = {}
+
+    class _Completed:
+        returncode = 0
+
+    def fake_run(cmd, check=False, env=None):
+        recorded["env"] = env
+        return _Completed()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    run_colabfold_batch(tmp_path / "colabfold_batch", "in.fasta", "out", quiet=False)
+    assert recorded["env"] is None
 
 
 def test_run_colabfold_batch_returns_127_when_binary_unexecutable(
@@ -241,7 +288,7 @@ def test_run_colabfold_batch_returns_127_when_binary_unexecutable(
     import subprocess
     import mamp_ml.fold.colabfold as cf
 
-    def boom(cmd, check=False):
+    def boom(cmd, check=False, env=None):
         raise OSError("Exec format error")
 
     monkeypatch.setattr(subprocess, "run", boom)

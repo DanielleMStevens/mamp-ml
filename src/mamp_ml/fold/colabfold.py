@@ -35,6 +35,18 @@ PathLike = Union[str, Path]
 #: Filenames we recognise as the ColabFold entry point.
 _COLABFOLD_BIN_NAME = "colabfold_batch"
 
+#: Environment variables that quiet ColabFold's TensorFlow / XLA / abseil / gRPC
+#: C++ logging — the ``absl::InitializeLog``, ``Unable to register cuDNN/cuBLAS
+#: factory``, and ``computation placer already registered`` spam printed at
+#: import time. These are harmless and not actionable for end users. We only
+#: apply them as *defaults* (never clobbering a value the user already set), so
+#: anyone debugging can still raise the verbosity from their own environment.
+_QUIET_FOLD_ENV = {
+    "TF_CPP_MIN_LOG_LEVEL": "3",  # TF/XLA: hide INFO+WARNING+ERROR C++ logs
+    "GRPC_VERBOSITY": "ERROR",    # gRPC: drop startup chatter
+    "GLOG_minloglevel": "3",      # abseil/glog: errors only
+}
+
 # Common locations where conda lives. We check each for an ``envs/`` subtree
 # and then scan ``envs/<name>/bin/colabfold_batch``.
 _CONDA_ROOT_CANDIDATES: Tuple[str, ...] = (
@@ -198,6 +210,7 @@ def run_colabfold_batch(
     num_models: int = 1,
     num_recycle: int = 1,
     extra_args: "Sequence[str] | None" = None,
+    quiet: bool = True,
 ) -> int:
     """Run a discovered ``colabfold_batch`` binary on ``fasta_path``.
 
@@ -223,6 +236,10 @@ def run_colabfold_batch(
     extra_args
         Optional extra CLI arguments inserted before the positional
         input/output (e.g. ``["--amber"]``).
+    quiet
+        When True (default), pass :data:`_QUIET_FOLD_ENV` to the subprocess to
+        suppress TensorFlow/XLA/abseil/gRPC C++ startup spam. We only set these
+        as defaults, so values already present in the environment win.
 
     Returns
     -------
@@ -239,8 +256,13 @@ def run_colabfold_batch(
         num_recycle=num_recycle,
         extra_args=extra_args,
     )
+    env = None
+    if quiet:
+        env = dict(os.environ)
+        for key, value in _QUIET_FOLD_ENV.items():
+            env.setdefault(key, value)
     try:
-        completed = subprocess.run(cmd, check=False)
+        completed = subprocess.run(cmd, check=False, env=env)
     except OSError as exc:
         print(f"Failed to execute {binary}: {exc}")
         return 127
