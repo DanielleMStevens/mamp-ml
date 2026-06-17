@@ -121,6 +121,15 @@ def _build_parser() -> argparse.ArgumentParser:
         epilog=_USAGE_EXAMPLES,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    from mamp_ml import __version__
+
+    parser.add_argument(
+        "-V",
+        "--version",
+        action="version",
+        version=f"mamp-ml {__version__}",
+        help="Print the installed mamp-ml version and exit.",
+    )
     sub = parser.add_subparsers(dest="cmd", required=True, metavar="SUBCOMMAND")
 
     # prepare (one-shot top-level) -------------------------------------

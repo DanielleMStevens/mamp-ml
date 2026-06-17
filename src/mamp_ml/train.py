@@ -421,7 +421,12 @@ def main(args):
         print(metrics)
         if not args.disable_wandb and misc.is_main_process():
             wandb.finish()
-        exit()
+        # Return (don't exit()) so callers like `mamp-ml predict` regain
+        # control and can run their post-inference steps — promoting
+        # predictions.csv into the labeled output folder and cleaning up
+        # intermediate_files/. A bare exit() here raised SystemExit straight
+        # past _run_predict, leaving the scratch dir behind and no output/ dir.
+        return metrics
 
     # Prepare training dataset and dataloader
     train_df = pd.read_csv(f"{args.data_dir}/final_model_training_data.csv")
