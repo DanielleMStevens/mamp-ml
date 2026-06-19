@@ -171,6 +171,66 @@ def xlsx_to_receptor_fasta(
     return n_written
 
 
+def write_truncated_fasta(
+    src_fasta: PathLike,
+    dst_fasta: PathLike,
+    max_length: int,
+) -> Tuple[int, int]:
+    """Copy a FASTA, truncating each sequence to its first ``max_length`` residues.
+
+    Used to bound the per-sequence cost of structure prediction. ColabFold /
+    AlphaFold2 memory scales steeply with sequence length, so very long
+    receptors (e.g. a 1617-aa receptor) can exhaust GPU/host memory and get
+    OOM-killed (``colabfold_batch`` exits with status ``-9``). Because the LRR
+    ectodomain sits at the **N-terminus** of these receptors, keeping the first
+    ``max_length`` residues preserves the region the rest of the pipeline
+    annotates while dropping the C-terminal kinase / cytoplasmic tail that the
+    LRR annotator never uses.
+
+    Records are written in input order with headers byte-identical to the
+    source, so PDB filename stems (derived from headers) still match the
+    canonical full-length FASTA used for the downstream header lookup in
+    :func:`build_lrr_domain_fasta`. Sequences already at or below ``max_length``
+    are copied verbatim.
+
+    Parameters
+    ----------
+    src_fasta
+        Path to the source FASTA (e.g. ``receptor_full_length.fasta``).
+    dst_fasta
+        Where to write the truncated copy. Parent directories are created on
+        demand. The file uses unconditional LF line endings.
+    max_length
+        Maximum number of residues to keep per record (counted from residue 1).
+
+    Returns
+    -------
+    (int, int)
+        ``(n_records, n_truncated)`` — total records written and how many were
+        longer than ``max_length`` (i.e. actually shortened).
+
+    Raises
+    ------
+    ValueError
+        If ``max_length`` is not positive.
+    """
+    if max_length <= 0:
+        raise ValueError(f"max_length must be positive, got {max_length}")
+    src_fasta = Path(src_fasta)
+    dst_fasta = Path(dst_fasta)
+    records = _read_fasta_records(src_fasta)
+
+    dst_fasta.parent.mkdir(parents=True, exist_ok=True)
+    n_truncated = 0
+    with open(dst_fasta, "w", newline="\n", encoding="utf-8") as fh:
+        for header, sequence in records:
+            if len(sequence) > max_length:
+                sequence = sequence[:max_length]
+                n_truncated += 1
+            fh.write(f">{header}\n{sequence}\n")
+    return len(records), n_truncated
+
+
 # =============================================================================
 # Section 2 :: Per-residue physico-chemical features
 # Replaces scripts/05_chemical_conversion.R

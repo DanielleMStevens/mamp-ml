@@ -48,6 +48,12 @@ pip install git+https://github.com/DanielleMStevens/mamp-ml.git@version2
 
 > **Note:** If you see `WARNING: There was an error checking the latest version of pip`, you can ignore it. That is pip's own self-update check failing to reach PyPI — common on cluster compute nodes with restricted internet — not a problem with the install, which has already completed. To suppress it, prefix the command with `PIP_DISABLE_PIP_VERSION_CHECK=1`.
 
+To **reinstall / upgrade** to the latest version (e.g. to pick up a fix pushed to the branch), force a clean reinstall — because the branch version often doesn't change between pushes, a plain `pip install` will report "already satisfied" and skip the update:
+```
+pip install --upgrade --force-reinstall --no-cache-dir git+https://github.com/DanielleMStevens/mamp-ml.git@version2
+```
+You can confirm which version is installed with `mamp-ml --version`.
+
 The sample spreadsheet ships inside the package, so you can grab a local copy to inspect the expected input format (or to smoke-test the install) without cloning the repo:
 ```
 mamp-ml example                          # writes example_data.xlsx into the current directory

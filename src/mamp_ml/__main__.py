@@ -229,6 +229,20 @@ def _build_parser() -> argparse.ArgumentParser:
             "to override. Ignored for --structure colabfold."
         ),
     )
+    sp.add_argument(
+        "--max-length",
+        type=int,
+        default=1300,
+        help=(
+            "Fold only the first N residues of each receptor with ColabFold "
+            "(default: 1300). ColabFold/AlphaFold2 memory scales steeply with "
+            "length, so long receptors can OOM-kill colabfold_batch (status "
+            "-9); the LRR ectodomain is N-terminal, so truncating preserves "
+            "it. The full-length FASTA is kept intact for header lookup. Pass "
+            "0 to disable truncation. Ignored for --structure esmfold (which "
+            "applies its own positional-embedding cap)."
+        ),
+    )
 
     # find-colabfold ---------------------------------------------------
     sp = sub.add_parser(
@@ -457,6 +471,20 @@ def _build_parser() -> argparse.ArgumentParser:
             "value is auto-picked from the host's free VRAM on CUDA devices; "
             "pass an explicit integer to override. Ignored for --structure "
             "colabfold."
+        ),
+    )
+    sp.add_argument(
+        "--max-length",
+        type=int,
+        default=1300,
+        help=(
+            "Fold only the first N residues of each receptor with ColabFold "
+            "(default: 1300). ColabFold/AlphaFold2 memory scales steeply with "
+            "length, so long receptors can OOM-kill colabfold_batch (status "
+            "-9); the LRR ectodomain is N-terminal, so truncating preserves "
+            "it. The full-length FASTA is kept intact for header lookup. Pass "
+            "0 to disable truncation. Ignored for --structure esmfold (which "
+            "applies its own positional-embedding cap)."
         ),
     )
     sp.add_argument(
@@ -725,6 +753,7 @@ def _run_prepare(args, *, progress=None) -> int:
         add_chemical_features,
         assemble_test_data,
         build_lrr_domain_fasta,
+        write_truncated_fasta,
         xlsx_to_receptor_fasta,
     )
     from mamp_ml.structure import run_structure_stage
@@ -797,6 +826,30 @@ def _run_prepare(args, *, progress=None) -> int:
                 run_colabfold_batch,
             )
 
+            # ColabFold/AlphaFold2 memory scales steeply with sequence length,
+            # so very long receptors can OOM-kill colabfold_batch (status -9).
+            # The LRR ectodomain is N-terminal, so we fold only the first
+            # `max_length` residues. This is ColabFold-specific: ESMFold keeps
+            # its own positional-embedding cap and folds the full FASTA. We
+            # write the truncated copy to a separate file so the canonical
+            # receptor_full_length.fasta (used for the downstream header
+            # lookup) stays intact.
+            colabfold_max_length = getattr(args, "max_length", None)
+            fold_input_fasta = receptor_fasta
+            if colabfold_max_length:
+                fold_input_fasta = out_dir / "receptor_for_folding.fasta"
+                n_records, n_trunc = write_truncated_fasta(
+                    receptor_fasta, fold_input_fasta, colabfold_max_length
+                )
+                if n_trunc:
+                    print(
+                        f"  truncating {n_trunc}/{n_records} receptor(s) longer "
+                        f"than {colabfold_max_length} aa to their N-terminal "
+                        f"{colabfold_max_length} residues for folding "
+                        f"(LRR ectodomain is N-terminal); full-length FASTA "
+                        f"preserved at {receptor_fasta}"
+                    )
+
             existing = find_colabfold_installs()
             if existing:
                 # A reachable colabfold_batch was found -> just run it. The
@@ -822,7 +875,7 @@ def _run_prepare(args, *, progress=None) -> int:
                 print()
                 rc = run_colabfold_batch(
                     binary,
-                    receptor_fasta,
+                    fold_input_fasta,
                     colabfold_dir,
                     num_models=1,
                     num_recycle=1,
@@ -837,7 +890,7 @@ def _run_prepare(args, *, progress=None) -> int:
                     print(f"  {format_activation_hint(binary)}")
                     print(
                         f"  colabfold_batch --num-models 1 --num-recycle 1 \\\n"
-                        f"      {receptor_fasta} \\\n"
+                        f"      {fold_input_fasta} \\\n"
                         f"      {colabfold_dir}"
                     )
                     return 2
@@ -862,7 +915,7 @@ def _run_prepare(args, *, progress=None) -> int:
                 print()
                 print(
                     f"  colabfold_batch --num-models 1 --num-recycle 1 \\\n"
-                    f"      {receptor_fasta} \\\n"
+                    f"      {fold_input_fasta} \\\n"
                     f"      {colabfold_dir}"
                 )
                 print()

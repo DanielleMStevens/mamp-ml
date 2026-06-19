@@ -293,6 +293,78 @@ def test_cli_prepare_auto_runs_discovered_colabfold(
     assert "ColabFold finished ->" in out
 
 
+def _run_prepare_capturing_fold_fasta(
+    tmp_path, example_xlsx, colabfold_outputs_dir, monkeypatch, extra_args
+):
+    """Helper: run ``prepare`` with a stubbed colabfold and return the
+    (captured_fasta_path, out_dir) so tests can assert which FASTA was folded."""
+    import shutil
+
+    import mamp_ml.fold.colabfold as cf
+
+    fake_binary = tmp_path / "localcolabfold" / "bin" / "colabfold_batch"
+    monkeypatch.setattr(
+        cf, "find_colabfold_installs", lambda: [(fake_binary, "on $PATH")]
+    )
+
+    captured: dict = {}
+
+    def fake_run(binary, fasta_path, output_dir, *, num_models, num_recycle, **kw):
+        captured["fasta"] = Path(fasta_path)
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        for f in colabfold_outputs_dir.iterdir():
+            if f.is_file():
+                shutil.copyfile(f, out / f.name)
+        return 0
+
+    monkeypatch.setattr(cf, "run_colabfold_batch", fake_run)
+
+    out_dir = tmp_path / "inter"
+    rc = cli_main(
+        [
+            "prepare",
+            str(example_xlsx),
+            "--out-dir",
+            str(out_dir),
+            "--structure-cache-dir",
+            str(tmp_path / "fresh_cache"),
+            *extra_args,
+        ]
+    )
+    assert rc == 0
+    return captured["fasta"], out_dir
+
+
+def test_cli_prepare_colabfold_folds_truncated_fasta_by_default(
+    tmp_path: Path, example_xlsx: Path, colabfold_outputs_dir: Path, monkeypatch
+) -> None:
+    """By default (--max-length 1300) the ColabFold input is the separate
+    receptor_for_folding.fasta; the canonical full-length FASTA is left intact."""
+    from mamp_ml.preprocess import _read_fasta_records
+
+    fasta, out_dir = _run_prepare_capturing_fold_fasta(
+        tmp_path, example_xlsx, colabfold_outputs_dir, monkeypatch, []
+    )
+    assert fasta.name == "receptor_for_folding.fasta"
+    assert (out_dir / "receptor_full_length.fasta").is_file()
+    # No record in the folded FASTA exceeds the cap, and full-length is preserved.
+    assert all(len(seq) <= 1300 for _, seq in _read_fasta_records(fasta))
+
+
+def test_cli_prepare_colabfold_max_length_zero_folds_full_length(
+    tmp_path: Path, example_xlsx: Path, colabfold_outputs_dir: Path, monkeypatch
+) -> None:
+    """--max-length 0 disables truncation: ColabFold folds the full-length FASTA
+    directly (no receptor_for_folding.fasta is written)."""
+    fasta, out_dir = _run_prepare_capturing_fold_fasta(
+        tmp_path, example_xlsx, colabfold_outputs_dir, monkeypatch,
+        ["--max-length", "0"],
+    )
+    assert fasta.name == "receptor_full_length.fasta"
+    assert not (out_dir / "receptor_for_folding.fasta").exists()
+
+
 def test_cli_prepare_reports_colabfold_failure(
     tmp_path: Path, example_xlsx: Path, capsys, monkeypatch
 ) -> None:
