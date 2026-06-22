@@ -25,12 +25,20 @@ CLI:
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
-from typing import List, Sequence, Tuple, Union
+from typing import Callable, List, Optional, Sequence, Tuple, Union
 
 PathLike = Union[str, Path]
+
+#: Matches ColabFold's per-receptor progress line, e.g.
+#: ``2026-06-19 02:17:37,427 Query 58/58: Vitis_vinifera_g224180.t01_VCORE (length 1617)``.
+#: Used to drive the terminal progress bar from the streamed subprocess output.
+COLABFOLD_QUERY_RE = re.compile(
+    r"Query\s+(?P<i>\d+)\s*/\s*(?P<n>\d+)\s*:\s*(?P<name>.+?)\s*\(length\s+(?P<length>\d+)\)"
+)
 
 #: Filenames we recognise as the ColabFold entry point.
 _COLABFOLD_BIN_NAME = "colabfold_batch"
@@ -211,15 +219,24 @@ def run_colabfold_batch(
     num_recycle: int = 1,
     extra_args: "Sequence[str] | None" = None,
     quiet: bool = True,
+    on_line: "Optional[Callable[[str], None]]" = None,
 ) -> int:
     """Run a discovered ``colabfold_batch`` binary on ``fasta_path``.
 
     The binary is invoked by its **absolute path**, so it works regardless of
     the caller's active environment: localcolabfold and conda installs ship a
     ``colabfold_batch`` whose shebang points at their own interpreter, so no
-    ``export PATH`` / ``conda activate`` is required. ColabFold's own output is
-    streamed straight to the terminal (not captured) so the user sees its
-    progress live.
+    ``export PATH`` / ``conda activate`` is required.
+
+    Output handling depends on ``on_line``:
+
+    * ``on_line is None`` (default) — ColabFold's output is streamed straight to
+      the terminal (not captured) so the user sees its progress live.
+    * ``on_line`` given — stdout+stderr are merged and read line by line, and
+      each line is handed to ``on_line`` instead of the terminal. The CLI uses
+      this to tee the full backend output into the run log while showing only a
+      compact progress bar, so a multi-hour run doesn't flood the screen but a
+      failure (e.g. an OOM kill, status ``-9``) is still fully captured.
 
     Parameters
     ----------
@@ -261,12 +278,38 @@ def run_colabfold_batch(
         env = dict(os.environ)
         for key, value in _QUIET_FOLD_ENV.items():
             env.setdefault(key, value)
+
+    if on_line is None:
+        # Legacy behaviour: inherit the terminal so the user sees output live.
+        try:
+            completed = subprocess.run(cmd, check=False, env=env)
+        except OSError as exc:
+            print(f"Failed to execute {binary}: {exc}")
+            return 127
+        return completed.returncode
+
+    # Captured mode: merge stderr into stdout and forward each line to the
+    # caller (which tees it to the run log and advances the progress bar).
     try:
-        completed = subprocess.run(cmd, check=False, env=env)
+        proc = subprocess.Popen(
+            cmd,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,  # line-buffered
+        )
     except OSError as exc:
-        print(f"Failed to execute {binary}: {exc}")
+        on_line(f"Failed to execute {binary}: {exc}")
         return 127
-    return completed.returncode
+    assert proc.stdout is not None
+    try:
+        for line in proc.stdout:
+            on_line(line.rstrip("\n"))
+    finally:
+        proc.stdout.close()
+        return_code = proc.wait()
+    return return_code
 
 
 def format_activation_hint(install_path: Path) -> str:

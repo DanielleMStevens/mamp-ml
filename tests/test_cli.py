@@ -293,6 +293,79 @@ def test_cli_prepare_auto_runs_discovered_colabfold(
     assert "ColabFold finished ->" in out
 
 
+def test_cli_prepare_writes_run_log_and_captures_colabfold_output(
+    tmp_path: Path,
+    example_xlsx: Path,
+    colabfold_outputs_dir: Path,
+    capsys,
+    monkeypatch,
+) -> None:
+    """ColabFold's verbose output is teed into intermediate_files/mamp-ml-run.log
+    (with the command + version), NOT onto the terminal; the terminal shows a
+    compact per-receptor progress bar instead."""
+    import shutil
+
+    import mamp_ml.fold.colabfold as cf
+
+    fake_binary = tmp_path / "localcolabfold" / "bin" / "colabfold_batch"
+    monkeypatch.setattr(
+        cf, "find_colabfold_installs", lambda: [(fake_binary, "on $PATH")]
+    )
+
+    verbose_line = (
+        "2026-06-19 02:17:37,427 Query 1/1: Some_Receptor_CORE (length 1617)"
+    )
+
+    def fake_run(binary, fasta_path, output_dir, *, num_models, num_recycle, **kw):
+        # Simulate ColabFold streaming its (noisy) output: hand a couple of
+        # lines to the on_line sink the CLI installed, then drop the golden
+        # fixtures so the rest of the pipeline can proceed.
+        on_line = kw.get("on_line")
+        if on_line is not None:
+            on_line("2026-06-19 02:10:09,893 Sleeping for 5s. Reason: RUNNING")
+            on_line(verbose_line)
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        for f in colabfold_outputs_dir.iterdir():
+            if f.is_file():
+                shutil.copyfile(f, out / f.name)
+        return 0
+
+    monkeypatch.setattr(cf, "run_colabfold_batch", fake_run)
+
+    out_dir = tmp_path / "inter"
+    rc = cli_main(
+        [
+            "prepare",
+            str(example_xlsx),
+            "--out-dir",
+            str(out_dir),
+            "--structure-cache-dir",
+            str(tmp_path / "fresh_cache"),
+        ]
+    )
+    assert rc == 0
+
+    out = capsys.readouterr().out
+    # The verbose backend chatter is NOT on the terminal ...
+    assert "Sleeping for 5s" not in out
+    # ... but a compact progress bar (driven by the Query line) is.
+    assert "folding" in out
+
+    # The run log exists, names the command + version, and holds the full
+    # backend transcript for error reports.
+    log_path = out_dir / "mamp-ml-run.log"
+    assert log_path.is_file()
+    log_text = log_path.read_text(encoding="utf-8")
+    from mamp_ml import __version__
+
+    assert "mamp-ml run log" in log_text
+    assert "command" in log_text and "prepare" in log_text
+    assert f"mamp-ml {__version__}" in log_text
+    assert "Sleeping for 5s" in log_text
+    assert verbose_line in log_text
+
+
 def _run_prepare_capturing_fold_fasta(
     tmp_path, example_xlsx, colabfold_outputs_dir, monkeypatch, extra_args
 ):

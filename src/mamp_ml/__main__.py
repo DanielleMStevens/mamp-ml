@@ -61,6 +61,7 @@ chemical-features
 from __future__ import annotations
 
 import argparse
+import shlex
 import sys
 from typing import List, Optional
 
@@ -105,6 +106,12 @@ Output
                            class (Immunogenic / Non-Immunogenic / Weakly
                            Immunogenic) and the per-class probabilities
     - lrr_annotation_plots/  per-receptor LRR regression plots
+    - mamp-ml-run.log      full run transcript (command, version, every step,
+                           and the complete ColabFold/ESMFold output) — attach
+                           this when reporting an error
+
+The folding step shows a compact per-receptor progress bar; the backend's
+verbose output is written to mamp-ml-run.log instead of the terminal.
 
 See the README at https://github.com/DanielleMStevens/mamp-ml for the
 full workflow + input spreadsheet format.
@@ -742,7 +749,7 @@ def _run_prepare(args, *, progress=None) -> int:
     """
     from pathlib import Path
 
-    from mamp_ml.progress import PipelineProgress
+    from mamp_ml.progress import FoldProgressBar, PipelineProgress, RunLogger
 
     own_progress = progress is None
     if own_progress:
@@ -762,6 +769,25 @@ def _run_prepare(args, *, progress=None) -> int:
     xlsx_path = Path(args.xlsx)
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Open the run log inside the (always-created) working directory so it
+    # survives even an early hard failure like an OOM-killed ColabFold; it is
+    # copied into the final output folder on success. Everything the reporter
+    # emits, plus the full fold-backend output, is teed here.
+    from mamp_ml import __version__ as _mamp_version
+
+    log = RunLogger(
+        out_dir / "mamp-ml-run.log",
+        command=getattr(args, "command_line", "mamp-ml"),
+        version=_mamp_version,
+        context=[
+            ("input", str(xlsx_path)),
+            ("device", str(getattr(args, "device", "") or "")),
+            ("structure", str(getattr(args, "structure", "") or "")),
+            ("out_dir", str(out_dir)),
+        ],
+    )
+    progress.attach_logger(log)
 
     colabfold_dir = (
         Path(args.colabfold_dir)
@@ -812,12 +838,20 @@ def _run_prepare(args, *, progress=None) -> int:
             device = _resolve_torch_device(getattr(args, "device", None))
             from mamp_ml.fold.esmfold import fold_with_esmfold
 
+            bar = FoldProgressBar(n, stream=sys.stdout, label="folding")
+
+            def _esm_progress(idx: int, total: int, name: str) -> None:
+                bar.update(idx, total=total, label=name)
+
             pdbs = fold_with_esmfold(
                 receptor_fasta,
                 colabfold_dir,
                 device=device,
                 chunk_size=getattr(args, "chunk_size", None),
+                on_progress=_esm_progress,
+                log=log.write_line,
             )
+            bar.finish()
             fold.done(f"{len(pdbs)} PDB(s) + log.txt", target=colabfold_dir)
         else:
             from mamp_ml.fold.colabfold import (
@@ -842,7 +876,7 @@ def _run_prepare(args, *, progress=None) -> int:
                     receptor_fasta, fold_input_fasta, colabfold_max_length
                 )
                 if n_trunc:
-                    print(
+                    progress.note(
                         f"  truncating {n_trunc}/{n_records} receptor(s) longer "
                         f"than {colabfold_max_length} aa to their N-terminal "
                         f"{colabfold_max_length} residues for folding "
@@ -862,7 +896,7 @@ def _run_prepare(args, *, progress=None) -> int:
                     numbered=False,
                 )
                 # NB: keep the literal phrase below — tests assert on it.
-                print(
+                progress.note(
                     "  running the discovered colabfold_batch automatically:"
                 )
                 fold.info(f"{binary}  ({source})")
@@ -872,23 +906,48 @@ def _run_prepare(args, *, progress=None) -> int:
                         "$PATH-preferred one above is used (run `mamp-ml "
                         "find-colabfold` to list them)"
                     )
-                print()
+                progress.note(
+                    f"  full ColabFold output is being written to {log.path}"
+                )
+
+                # Stream ColabFold's (very verbose) output into the run log and
+                # show only a compact per-receptor bar on the terminal. The bar
+                # is driven by ColabFold's own "Query i/N: <name> (length L)"
+                # lines; the total is seeded from the receptor count.
+                from mamp_ml.fold.colabfold import COLABFOLD_QUERY_RE
+
+                bar = FoldProgressBar(n, stream=sys.stdout, label="folding")
+
+                def _colabfold_line(line: str) -> None:
+                    log.write_line(line)
+                    m = COLABFOLD_QUERY_RE.search(line)
+                    if m:
+                        bar.update(
+                            int(m.group("i")),
+                            total=int(m.group("n")),
+                            label=f"{m.group('name')} ({m.group('length')} aa)",
+                        )
+
                 rc = run_colabfold_batch(
                     binary,
                     fold_input_fasta,
                     colabfold_dir,
                     num_models=1,
                     num_recycle=1,
+                    on_line=_colabfold_line,
                 )
+                bar.finish()
                 if rc != 0:
                     fold.fail(f"ColabFold exited with status {rc}")
-                    print(
-                        f"ColabFold exited with status {rc} (see its output "
-                        "above). Fix the error and re-run this command, or run "
-                        "ColabFold manually:"
+                    progress.note(
+                        f"ColabFold exited with status {rc} (full output is in "
+                        f"the run log: {log.path}). A status of -9 means the OS "
+                        "OOM-killed it — lower --max-length and re-run. Fix the "
+                        "error and re-run this command, or run ColabFold "
+                        "manually:"
                     )
-                    print(f"  {format_activation_hint(binary)}")
-                    print(
+                    progress.note(f"  {format_activation_hint(binary)}")
+                    progress.note(
                         f"  colabfold_batch --num-models 1 --num-recycle 1 \\\n"
                         f"      {fold_input_fasta} \\\n"
                         f"      {colabfold_dir}"
@@ -896,30 +955,30 @@ def _run_prepare(args, *, progress=None) -> int:
                     return 2
                 if not log_path.is_file():
                     fold.fail("ColabFold wrote no log.txt")
-                    print(
+                    progress.note(
                         "ColabFold finished (status 0) but wrote no log.txt to "
-                        f"{colabfold_dir}; cannot continue. Check ColabFold's "
-                        "output above for warnings."
+                        f"{colabfold_dir}; cannot continue. Check the run log "
+                        f"({log.path}) for warnings."
                     )
                     return 2
                 # NB: keep the literal "ColabFold finished ->" — tests assert it.
                 fold.done("ColabFold finished ->", target=colabfold_dir)
                 # Fall through to the structure stage with the fresh outputs.
             else:
-                print()
-                print("ColabFold has not been run yet for this input.")
-                print(
+                progress.note("")
+                progress.note("ColabFold has not been run yet for this input.")
+                progress.note(
                     "Run ColabFold on the receptor FASTA above, then re-invoke "
                     "this command. Suggested invocation:"
                 )
-                print()
-                print(
+                progress.note("")
+                progress.note(
                     f"  colabfold_batch --num-models 1 --num-recycle 1 \\\n"
                     f"      {fold_input_fasta} \\\n"
                     f"      {colabfold_dir}"
                 )
-                print()
-                print(
+                progress.note("")
+                progress.note(
                     "(No existing colabfold_batch found. See "
                     "scripts/install_colabbatch_linux.sh or "
                     "scripts/install_colabbatch_mac.sh to install ColabFold "
@@ -927,6 +986,7 @@ def _run_prepare(args, *, progress=None) -> int:
                     "Run `mamp-ml find-colabfold` later if you install or "
                     "load a ColabFold module.)"
                 )
+                log.close()
                 return 2
 
     # ---- Step 2/6: structure stage (LRR annotation) ----
@@ -975,8 +1035,10 @@ def _run_prepare(args, *, progress=None) -> int:
                 ("Model-ready CSV", ready_csv),
                 ("LRR annotation plots", f"{plot_dir}/"),
                 ("All intermediates", f"{out_dir}/"),
+                ("Run log", log.path),
             ],
         )
+        log.close()
     return 0
 
 
@@ -1035,6 +1097,10 @@ def _run_predict(args) -> int:
     # without rebuilding a namespace.
     prepare_rc = _run_prepare(args, progress=progress)
     if prepare_rc != 0:
+        # prepare hit the ColabFold gate / a fold failure. The run log lives in
+        # the (retained) intermediate dir for the error report; flush + close.
+        if progress.logger is not None:
+            progress.logger.close()
         return prepare_rc
 
     from mamp_ml import train
@@ -1044,15 +1110,19 @@ def _run_predict(args) -> int:
     ready_csv = out_dir / "ready_test_data.csv"
     weights = Path(args.weights) if args.weights else default_weights_path()
     if not weights.is_file():
-        print(
+        progress.note(
             f"Error: model weights not found at {weights}. "
             "Pass --weights with an explicit path to a custom .pth file, or "
-            "reinstall the package to restore the bundled weights.",
+            "reinstall the package to restore the bundled weights."
         )
+        if progress.logger is not None:
+            progress.logger.close()
         return 3
     if not ready_csv.is_file():
         # Should not happen — prepare returns 0 only after producing this file.
-        print(f"Error: ready_test_data.csv missing at {ready_csv}.")
+        progress.note(f"Error: ready_test_data.csv missing at {ready_csv}.")
+        if progress.logger is not None:
+            progress.logger.close()
         return 4
 
     infer = progress.start(
@@ -1090,26 +1160,28 @@ def _run_predict(args) -> int:
     except OSError as exc:
         if _is_disk_full_error(exc):
             infer.fail("disk quota / no space while caching model weights")
-            print()
-            print(
+            progress.note("")
+            progress.note(
                 "ESM-2 weights are cached to disk and the target filesystem is "
                 "out of space / over quota:"
             )
-            print(f"  {exc}")
-            print()
-            print(
+            progress.note(f"  {exc}")
+            progress.note("")
+            progress.note(
                 "By default mamp-ml caches model weights next to its install "
                 f"({_default_model_cache_dir()}). Point the cache at a "
                 "filesystem with more room and re-run — either pass --cache-dir, "
                 "or export HF_HOME:"
             )
-            print()
-            print(
+            progress.note("")
+            progress.note(
                 f"  mamp-ml predict {args.xlsx} --device {args.device} "
                 "--cache-dir /path/with/room"
             )
-            print("  # or, once for the whole session:")
-            print("  export HF_HOME=/path/with/room")
+            progress.note("  # or, once for the whole session:")
+            progress.note("  export HF_HOME=/path/with/room")
+            if progress.logger is not None:
+                progress.logger.close()
             return 5
         raise
     finally:
@@ -1135,28 +1207,46 @@ def _run_predict(args) -> int:
         predictions_csv, results_dir / "predictions.csv"
     )
     final_plots = _promote_output(plots_dir, results_dir / "lrr_annotation_plots")
+    log_dest = results_dir / "mamp-ml-run.log"
     outputs = [
         ("Output folder", f"{results_dir}/"),
         ("  predictions", (final_predictions or predictions_csv).name),
         ("  LRR annotation plots", f"{(final_plots or plots_dir).name}/"),
+        ("  run log", log_dest.name),
     ]
 
     keep_mode = getattr(args, "keep", "default")
     if keep_mode == "all":
         outputs.append(("Intermediates kept", f"{out_dir}/"))
     else:
-        # Remove the intermediate_files working directory now that the
-        # deliverables are out of it — unless --out-dir points at the invocation
-        # dir or the results folder itself (don't delete what we just wrote).
-        protected = {invocation_dir.resolve(), results_dir.resolve()}
-        if out_dir.resolve() not in protected:
-            import shutil
-
-            shutil.rmtree(out_dir, ignore_errors=True)
         outputs.append(
             ("(intermediates removed", "rerun with `--keep all` to retain them)")
         )
     progress.complete("Prediction complete", outputs=outputs)
+
+    # Finalise the run log: flush the closing summary, then copy it into the
+    # final output folder so the deliverables are self-describing (command +
+    # version + full transcript). Do this *before* removing the working dir.
+    import shutil
+
+    if progress.logger is not None:
+        progress.logger.close()
+    src_log = out_dir / "mamp-ml-run.log"
+    try:
+        if src_log.is_file() and src_log.resolve() != log_dest.resolve():
+            log_dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src_log, log_dest)
+    except OSError:
+        pass
+
+    if keep_mode != "all":
+        # Remove the intermediate_files working directory now that the
+        # deliverables (including the run log) are out of it — unless --out-dir
+        # points at the invocation dir or the results folder itself (don't
+        # delete what we just wrote).
+        protected = {invocation_dir.resolve(), results_dir.resolve()}
+        if out_dir.resolve() not in protected:
+            shutil.rmtree(out_dir, ignore_errors=True)
     return 0
 
 
@@ -1367,6 +1457,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     """
     parser = _build_parser()
     args = parser.parse_args(argv)
+
+    # Reconstruct the command line so the run log records exactly how the tool
+    # was invoked (and therefore which version/flags produced its outputs).
+    raw_argv = sys.argv[1:] if argv is None else list(argv)
+    args.command_line = "mamp-ml " + " ".join(shlex.quote(a) for a in raw_argv)
 
     # Steer the HuggingFace model cache to a writable location before any of
     # the model-loading subcommands import transformers / huggingface_hub.

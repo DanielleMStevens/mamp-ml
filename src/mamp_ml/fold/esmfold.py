@@ -38,7 +38,7 @@ import datetime
 import re
 import warnings
 from pathlib import Path
-from typing import List, Tuple, Union
+from typing import Callable, List, Optional, Tuple, Union
 
 PathLike = Union[str, Path]
 
@@ -404,6 +404,8 @@ def fold_with_esmfold(
     max_length: int = ESMFOLD_MAX_LENGTH,
     model_id: str = "facebook/esmfold_v1",
     chunk_size: "int | None" = None,
+    on_progress: "Optional[Callable[[int, int, str], None]]" = None,
+    log: "Optional[Callable[[str], None]]" = None,
 ) -> List[Path]:
     """Fold every sequence in ``fasta_path`` and write ColabFold-style outputs.
 
@@ -445,6 +447,13 @@ def fold_with_esmfold(
         from the host's free VRAM via :func:`auto_pick_chunk_size`. Pass an
         explicit integer to override that auto-pick; pass any explicit value
         to skip the auto-pick on CPU/MPS too.
+    on_progress
+        Optional ``callback(index, total, receptor_name)`` invoked once per
+        receptor (1-based ``index``) just before it is folded. The CLI uses
+        this to drive a terminal progress bar over the run.
+    log
+        Optional ``callback(line)`` that receives each status line this function
+        would otherwise only print, so the CLI can mirror them into the run log.
 
     Returns
     -------
@@ -477,7 +486,13 @@ def fold_with_esmfold(
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"Loading {model_id} (one-time download: ~7 GB on first run)...")
+    def _emit(text: str) -> None:
+        """Print a status line and mirror it into the run log when provided."""
+        print(text)
+        if log is not None:
+            log(text)
+
+    _emit(f"Loading {model_id} (one-time download: ~7 GB on first run)...")
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     model = EsmForProteinFolding.from_pretrained(model_id)
     if device == "cpu":
@@ -512,13 +527,13 @@ def fold_with_esmfold(
         chunk_size = None
 
     if chunk_size is not None:
-        print(f"  (ESMFold trunk chunk size: {chunk_size} [{chunk_size_source}])")
+        _emit(f"  (ESMFold trunk chunk size: {chunk_size} [{chunk_size_source}])")
     elif device.startswith("cuda"):
         # CUDA with >= 24 GB free -> no chunking, full speed. Worth surfacing
         # so the user knows the auto-pick decided to skip. If this proves too
         # optimistic for the actual sequence length, the OOM-backoff loop below
         # still kicks in and chunks down automatically.
-        print("  (ESMFold trunk chunking: disabled — >= 24 GB free VRAM)")
+        _emit("  (ESMFold trunk chunking: disabled — >= 24 GB free VRAM)")
 
     log_records: List[Tuple[str, int, int, float, float]] = []
     pdbs_written: List[Path] = []
@@ -528,8 +543,11 @@ def fold_with_esmfold(
     # rather than re-discovering the same OOM each time.
     effective_chunk_size = chunk_size
 
-    for header, sequence in records:
+    n_records = len(records)
+    for idx, (header, sequence) in enumerate(records, start=1):
         receptor_name = normalize_receptor_name(header)
+        if on_progress is not None:
+            on_progress(idx, n_records, receptor_name)
         original_length = len(sequence)
         if original_length > max_length:
             warnings.warn(
