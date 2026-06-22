@@ -658,8 +658,14 @@ def test_shell_pipeline_end_to_end(
         pd.testing.assert_frame_equal(pd.read_csv(produced), pd.read_csv(golden))
 
     # bfactor uses ~1e-10 tolerance because of float roundoff in Winding Number.
+    # NB: the full pipeline now reads the breakpoints THIS run computed (the
+    # per-run <out-dir>/lrr_cache/), not the shipped production cache, so the
+    # B-factor region matches lrr_annotation_results.txt (Solanum [112, 646] ->
+    # 534 rows). This is the "_fresh" golden; the production-cache path (which
+    # gives Solanum [112, 636] -> 524 rows) is covered separately by
+    # test_cli_bfactor / test_compute_bfactor_lrr_segments_matches_golden.
     produced = inter / "bfactor_winding_lrr_segments.csv"
-    golden = goldens_dir / "bfactor_winding_lrr_segments.csv"
+    golden = goldens_dir / "bfactor_winding_lrr_segments_fresh.csv"
     pd.testing.assert_frame_equal(
         pd.read_csv(produced).reset_index(drop=True),
         pd.read_csv(golden).reset_index(drop=True),

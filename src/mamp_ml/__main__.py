@@ -83,6 +83,9 @@ _USAGE_EXAMPLES = """\
 Example usage
 -------------
 
+  # Preflight the install (PyTorch/GPU compatibility, ColabFold, weights)
+  mamp-ml install-check
+
   # Smoke-test your install on the bundled sample (no data of your own needed)
   mamp-ml predict --example --device cuda
 
@@ -200,20 +203,23 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument(
         "--structure-cache-dir",
-        default="LRR_Annotation/cache",
+        default=None,
         help=(
-            "Directory for the structure-stage geometry pickles "
-            "(default: LRR_Annotation/cache). Matches legacy convention."
+            "Directory for the structure-stage geometry + breakpoints pickles. "
+            "Defaults to a per-run <out-dir>/lrr_cache/ so the B-factor stage "
+            "reads the breakpoints this run actually computed (the breakpoints "
+            "are an output of the LRR-annotation stage)."
         ),
     )
     sp.add_argument(
         "--bfactor-cache-dir",
         default=None,
         help=(
-            "Directory the bfactor stage reads breakpoints from. "
-            "Default: the production cache shipped with mamp_ml "
-            "(src/mamp_ml/lrr_annotation/cache). Use the structure-cache-dir "
-            "value for fresh receptors not in the production cache."
+            "Directory the B-factor stage reads breakpoints from. Defaults to "
+            "the structure-cache-dir for this run (i.e. the freshly-computed "
+            "breakpoints). Point this at the shipped production cache "
+            "(src/mamp_ml/lrr_annotation/cache) only to reproduce the original "
+            "training set."
         ),
     )
     sp.add_argument(
@@ -272,6 +278,19 @@ def _build_parser() -> argparse.ArgumentParser:
             "it. The full-length FASTA is kept intact for header lookup. Pass "
             "0 to disable truncation. Ignored for --structure esmfold (which "
             "applies its own positional-embedding cap)."
+        ),
+    )
+
+    # install-check ----------------------------------------------------
+    sub.add_parser(
+        "install-check",
+        help="Verify the install can run (PyTorch/GPU, ColabFold, weights).",
+        description=(
+            "Preflight the install before submitting a long job: reports the "
+            "mamp-ml version, the PyTorch build and whether it can actually use "
+            "the visible GPU (catching the V100/sm_70 'no kernel image' trap "
+            "before it crashes mid-run), runs a live CUDA op, checks ColabFold "
+            "discovery, and confirms the bundled weights are present."
         ),
     )
 
@@ -457,13 +476,21 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument(
         "--structure-cache-dir",
-        default="LRR_Annotation/cache",
-        help="Directory for the structure-stage geometry pickles.",
+        default=None,
+        help=(
+            "Directory for the structure-stage geometry + breakpoints pickles "
+            "(default: a per-run <out-dir>/lrr_cache/). The B-factor stage reads "
+            "this run's breakpoints from here."
+        ),
     )
     sp.add_argument(
         "--bfactor-cache-dir",
         default=None,
-        help="Override for the bfactor-stage breakpoints cache directory.",
+        help=(
+            "Directory the B-factor stage reads breakpoints from (default: the "
+            "structure-cache-dir for this run). Point at the shipped production "
+            "cache only to reproduce the original training set."
+        ),
     )
     sp.add_argument(
         "--weights",
@@ -937,11 +964,21 @@ def _run_prepare(args, *, progress=None) -> int:
     colabfold_dir = Path(reuse_dir) if reuse_dir else out_dir / "receptor_only"
     colabfold_dir.mkdir(parents=True, exist_ok=True)
 
-    structure_cache_dir = Path(args.structure_cache_dir)
+    # The breakpoints the B-factor stage needs are an OUTPUT of the structure
+    # (LRR-annotation) stage, so by default both share a per-run cache inside
+    # this run's working dir. This makes the B-factor weighting work for novel
+    # receptors (the shipped cache only holds the original training set) and is
+    # collision-safe across concurrent runs. Explicit overrides still win;
+    # point --bfactor-cache-dir at the shipped cache only to reproduce training.
+    structure_cache_dir = (
+        Path(args.structure_cache_dir)
+        if getattr(args, "structure_cache_dir", None)
+        else out_dir / "lrr_cache"
+    )
     bfactor_cache_dir = (
         Path(args.bfactor_cache_dir)
-        if args.bfactor_cache_dir
-        else _resolve_default_bfactor_cache()
+        if getattr(args, "bfactor_cache_dir", None)
+        else structure_cache_dir
     )
 
     receptor_fasta = out_dir / "receptor_full_length.fasta"
@@ -1153,6 +1190,18 @@ def _run_prepare(args, *, progress=None) -> int:
         pdb_target_dir, bfactor_cache_dir, bfactor_csv
     )
     step.done(f"{len(bfactor_df)} row(s)", target=bfactor_csv)
+    if len(bfactor_df) == 0:
+        # No rows means the model will fall back to UNIFORM (default) weights —
+        # the structure-derived B-factor weighting is silently lost. Surface it
+        # loudly; the usual cause is a breakpoints cache that doesn't cover
+        # these receptors (e.g. --bfactor-cache-dir pointing at the shipped
+        # training cache instead of this run's freshly-computed breakpoints).
+        progress.note(
+            "  ⚠ B-factor analysis produced 0 rows — the model will use "
+            "UNIFORM weights, not the structure-derived B-factor weighting. "
+            f"Check that {bfactor_cache_dir}/breakpoints.pickle covers these "
+            "receptors (by default it is this run's own lrr_cache/)."
+        )
 
     # ---- Step 5/6: test-data assembly ----
     step = progress.start("Test-data assembly", estimate="<10s")
@@ -1275,6 +1324,13 @@ def _run_predict(args) -> int:
             progress.logger.close()
         return 4
 
+    # Validate the requested device against the installed PyTorch BEFORE the
+    # expensive inference: a torch build without kernels for this GPU's compute
+    # capability otherwise crashes deep in the forward pass
+    # (cudaErrorNoKernelImageForDevice). Fall back to CPU with a clear warning
+    # rather than dying minutes in.
+    device = _resolve_inference_device(getattr(args, "device", "cpu"), progress)
+
     infer = progress.start(
         "Predict · ESM-2 inference",
         estimate="~30s–3 min on GPU, longer on CPU",
@@ -1282,14 +1338,20 @@ def _run_predict(args) -> int:
     )
     infer.info(f"weights: {weights}")
 
+    bfactor_csv = out_dir / "bfactor_winding_lrr_segments.csv"
     eval_argv = [
         "--model", "esm2_bfactor_weighted",
         "--eval_only_data_path", str(ready_csv.resolve()),
         "--model_checkpoint_path", str(weights.resolve()),
-        "--device", args.device,
+        "--device", device,
         "--disable_wandb",
     ]
     train_args = train.get_args_parser().parse_args(eval_argv)
+
+    # Tell the model exactly where this run's B-factor CSV is. The model's own
+    # fallback search uses a relative path that breaks once we chdir into
+    # out_dir, so without this the structure-derived weighting is silently lost.
+    train_args.bfactor_csv_path = str(bfactor_csv.resolve()) if bfactor_csv.is_file() else None
 
     # train.main() reads `args.output_dir` directly (the legacy __main__ block
     # set it after parsing; main() does not). We mirror that here so eval mode
@@ -1468,6 +1530,64 @@ def _promote_output(src: "Path", dest: "Path") -> "Path | None":
     return dest
 
 
+def _gpu_compatibility_problem(device_str: "str | None") -> "str | None":
+    """Why the requested CUDA device can't be used by the installed torch.
+
+    Returns a human-readable reason, or ``None`` if the device is fine (or isn't
+    a CUDA device). Catches the common cluster failure where a PyTorch build
+    ships no kernels for the GPU's compute capability — which otherwise crashes
+    deep in the forward pass with ``cudaErrorNoKernelImageForDevice`` (e.g. a
+    Tesla V100, CC 7.0 / sm_70, against a torch built only for sm_75+).
+    """
+    if not device_str or not str(device_str).startswith("cuda"):
+        return None
+    try:
+        import torch
+    except ImportError:
+        return "PyTorch is not installed"
+    if not torch.cuda.is_available():
+        return (
+            "torch.cuda.is_available() is False (no CUDA driver/runtime visible, "
+            "or this is a CPU-only PyTorch build)"
+        )
+    try:
+        major, minor = torch.cuda.get_device_capability(0)
+        name = torch.cuda.get_device_name(0)
+        arches = list(torch.cuda.get_arch_list())  # e.g. ['sm_75', 'sm_80', ...]
+        sm = f"sm_{major}{minor}"
+        if arches and sm not in arches:
+            return (
+                f"GPU '{name}' is compute capability {major}.{minor} ({sm}), but "
+                f"this PyTorch was built only for [{', '.join(arches)}]. Install "
+                "a torch build that includes this GPU's architecture."
+            )
+    except Exception as exc:  # pragma: no cover - exotic driver states
+        return f"could not query the GPU ({exc})"
+    return None
+
+
+def _resolve_inference_device(requested: "str | None", progress=None) -> str:
+    """Return a device that the installed torch can actually run on.
+
+    If the requested CUDA device is unusable, fall back to CPU with a clear
+    warning rather than crashing minutes into inference. The bundled model is
+    small, so CPU is an acceptable default.
+    """
+    problem = _gpu_compatibility_problem(requested)
+    if problem is None:
+        return requested or "cpu"
+    msg = (
+        f"requested --device {requested}, but it is unusable: {problem} "
+        "Falling back to --device cpu. Run `mamp-ml install-check` to diagnose, "
+        "and the README's install section for a GPU-compatible PyTorch."
+    )
+    if progress is not None:
+        progress.note(f"  ⚠ {msg}")
+    else:
+        print(f"Warning: {msg}")
+    return "cpu"
+
+
 def _resolve_torch_device(device_arg: Optional[str]) -> str:
     """Pick a torch device for ESMFold given the user's --device hint.
 
@@ -1490,6 +1610,108 @@ def _resolve_torch_device(device_arg: Optional[str]) -> str:
     except ImportError:
         pass
     return "cpu"
+
+
+def _run_install_check(args) -> int:
+    """Implementation of ``python -m mamp_ml install-check``.
+
+    A preflight that verifies the install can actually run, BEFORE a user
+    submits a long job: mamp-ml version, the PyTorch build + whether it can use
+    the visible GPU (the V100/sm_70 trap), a tiny live CUDA op, ColabFold
+    discovery, and the bundled weights. Prints a PASS/WARN/FAIL line per check
+    and returns non-zero if any hard check failed.
+    """
+    from mamp_ml import __version__
+
+    ok = "  [ OK ]"
+    warn = "  [WARN]"
+    fail = "  [FAIL]"
+    n_fail = 0
+    n_warn = 0
+
+    print(f"mamp-ml install-check  (mamp-ml {__version__})")
+    print("=" * 50)
+
+    # --- PyTorch + GPU --------------------------------------------------
+    try:
+        import torch
+
+        print(f"{ok} PyTorch {torch.__version__} (CUDA build: {torch.version.cuda or 'cpu-only'})")
+    except ImportError:
+        print(f"{fail} PyTorch is not installed — inference cannot run")
+        torch = None
+        n_fail += 1
+
+    if torch is not None:
+        if not torch.cuda.is_available():
+            print(
+                f"{warn} No usable CUDA GPU (torch.cuda.is_available() is False). "
+                "Inference will run on CPU — fine for the bundled 8M model."
+            )
+            n_warn += 1
+        else:
+            count = torch.cuda.device_count()
+            arches = list(torch.cuda.get_arch_list())
+            print(f"{ok} CUDA available: {count} device(s); torch built for [{', '.join(arches) or '?'}]")
+            for i in range(count):
+                problem = _gpu_compatibility_problem("cuda")  # checks device 0
+                name = torch.cuda.get_device_name(i)
+                major, minor = torch.cuda.get_device_capability(i)
+                sm = f"sm_{major}{minor}"
+                if arches and sm not in arches:
+                    print(
+                        f"{fail} GPU{i} {name} (CC {major}.{minor}/{sm}) is NOT supported "
+                        f"by this PyTorch — would crash with cudaErrorNoKernelImageForDevice. "
+                        "Reinstall a torch build that includes this architecture."
+                    )
+                    n_fail += 1
+                else:
+                    print(f"{ok} GPU{i} {name} (CC {major}.{minor}/{sm}) supported")
+            # Live smoke test: a real kernel launch catches mismatches the arch
+            # list alone might miss.
+            try:
+                _ = (torch.ones(8, 8, device="cuda") @ torch.ones(8, 8, device="cuda")).sum().item()
+                print(f"{ok} Live CUDA op succeeded")
+            except Exception as exc:
+                print(f"{fail} Live CUDA op failed: {type(exc).__name__}: {exc}")
+                n_fail += 1
+
+    # --- ColabFold ------------------------------------------------------
+    from mamp_ml.fold.colabfold import find_colabfold_installs
+
+    installs = find_colabfold_installs()
+    if installs:
+        print(f"{ok} ColabFold found: {installs[0][0]} ({installs[0][1]})")
+    else:
+        print(
+            f"{warn} No colabfold_batch found. Folding needs ColabFold (or pass "
+            "--structure esmfold). Reused structures via --structures don't need it."
+        )
+        n_warn += 1
+
+    # --- Bundled weights ------------------------------------------------
+    try:
+        from mamp_ml.weights import default_weights_path
+
+        wp = default_weights_path()
+        if wp.is_file():
+            print(f"{ok} Bundled model weights present: {wp.name}")
+        else:
+            print(f"{fail} Bundled weights missing at {wp} — reinstall mamp-ml")
+            n_fail += 1
+    except Exception as exc:
+        print(f"{fail} Could not locate bundled weights: {exc}")
+        n_fail += 1
+
+    print("=" * 50)
+    if n_fail:
+        print(f"{n_fail} check(s) FAILED, {n_warn} warning(s). See messages above.")
+        return 1
+    if n_warn:
+        print(f"All hard checks passed, {n_warn} warning(s).")
+        return 0
+    print("All checks passed.")
+    return 0
 
 
 def _run_find_colabfold(args) -> int:
@@ -1656,6 +1878,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.cmd == "fold":
         return _run_fold(args)
+
+    if args.cmd == "install-check":
+        return _run_install_check(args)
 
     if args.cmd == "find-colabfold":
         return _run_find_colabfold(args)

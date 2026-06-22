@@ -54,6 +54,23 @@ pip install --upgrade --force-reinstall --no-cache-dir git+https://github.com/Da
 ```
 You can confirm which version is installed with `mamp-ml --version`.
 
+### GPU / PyTorch compatibility (install mamp-ml in its own environment)
+
+**Install mamp-ml into its own conda/venv environment — not into the ColabFold (`localcolabfold`) environment.** mamp-ml finds `colabfold_batch` automatically by absolute path (see `mamp-ml find-colabfold`), so the two never need to share an environment, and the ColabFold environment's PyTorch is built for ColabFold's needs, not yours. Installing mamp-ml there is the usual cause of `CUDA error: no kernel image is available for execution on the device` (`cudaErrorNoKernelImageForDevice`) — that means the active PyTorch has no kernels for your GPU's compute capability (e.g. a **Tesla V100 = CC 7.0 / sm_70** against a torch built only for sm_75+).
+
+Set up a clean environment with a PyTorch whose wheels cover your GPU. The default PyPI / cu121 / cu118 wheels include `sm_70` (V100) through current data-center cards:
+```
+conda create -n mampml python=3.10 -y && conda activate mampml
+pip install torch --index-url https://download.pytorch.org/whl/cu121   # cu121 covers V100 (sm_70) .. Hopper
+pip install --force-reinstall --no-cache-dir git+https://github.com/DanielleMStevens/mamp-ml.git@version2
+```
+
+**Before submitting a long job, preflight the install:**
+```
+mamp-ml install-check
+```
+It reports the mamp-ml version, the PyTorch build and whether it can actually use the visible GPU (catching the sm_70 trap up front), runs a live CUDA op, checks ColabFold discovery, and confirms the bundled weights. If `--device cuda` is requested but the GPU is unusable, `mamp-ml predict` now prints a warning and **automatically falls back to `--device cpu`** rather than crashing mid-run — the bundled 8M model runs fine on CPU.
+
 The sample spreadsheet ships inside the package, so you can grab a local copy to inspect the expected input format (or to smoke-test the install) without cloning the repo:
 ```
 mamp-ml example                          # writes example_data.xlsx into the current directory
