@@ -47,39 +47,41 @@ _Center for Computational Biology, University of California, Berkeley_
 > ```
 > Run every command below **inside this activated environment**. mamp-ml finds ColabFold by absolute path (`mamp-ml find-colabfold`), so it never needs to share an environment with ColabFold or boltz.
 
-To install mamp-ml and (optionally) ColabFold for receptor structure prediction, run (inside the dedicated environment above):
-```
-bash install_software.sh
-```
+### Install (recommended)
 
-This installs the Python package (mamp-ml + pretrained weights bundled) and ColabFold + its AlphaFold2 parameters. Alternatively, install just the Python package via pip:
+Inside the dedicated environment above, install a GPU-matched **PyTorch first**, then mamp-ml. Installing torch first means mamp-ml won't pull a build that doesn't match your GPU:
 ```
-pip install git+https://github.com/DanielleMStevens/mamp-ml.git@version2
+# 1. PyTorch matching your GPU. cu121 wheels cover sm_70 (Tesla V100) through current
+#    data-center cards; use cu118 for older drivers, or drop --index-url for CPU-only.
+pip install torch --index-url https://download.pytorch.org/whl/cu121
+
+# 2. mamp-ml (pretrained model weights are bundled).
+pip install --no-cache-dir git+https://github.com/DanielleMStevens/mamp-ml.git@version2
+
+# 3. Preflight the install (do this before any long job).
+mamp-ml install-check
 ```
+`mamp-ml install-check` reports the mamp-ml version, the PyTorch build and **whether it can actually drive your GPU** — catching the `CUDA error: no kernel image is available for execution on the device` (`cudaErrorNoKernelImageForDevice` / sm_70) trap up front instead of crashing mid-run — plus a live CUDA op, ColabFold discovery, and the bundled weights. If `--device cuda` is requested but the GPU is unusable, `mamp-ml predict` warns and **automatically falls back to `--device cpu`** (the bundled 8M model runs fine on CPU). That `cudaErrorNoKernelImageForDevice` crash almost always means torch was built for a different compute capability than your card (e.g. a V100 = CC 7.0 / sm_70 against a torch built only for sm_75+) — installing the matching torch in step 1 avoids it.
 
-> **Note:** If you see `WARNING: There was an error checking the latest version of pip`, you can ignore it. That is pip's own self-update check failing to reach PyPI — common on cluster compute nodes with restricted internet — not a problem with the install, which has already completed. To suppress it, prefix the command with `PIP_DISABLE_PIP_VERSION_CHECK=1`.
+To also install **ColabFold** + its AlphaFold2 parameters in the same environment, run `bash install_software.sh` instead of step 2 (it installs mamp-ml and ColabFold together).
 
-To **reinstall / upgrade** to the latest version (e.g. to pick up a fix pushed to the branch), force a clean reinstall — because the branch version often doesn't change between pushes, a plain `pip install` will report "already satisfied" and skip the update:
+**Reinstall / upgrade** to pick up a fix pushed to the branch — force it, because a plain reinstall can report "already satisfied" and skip the update:
 ```
 pip install --upgrade --force-reinstall --no-cache-dir git+https://github.com/DanielleMStevens/mamp-ml.git@version2
 ```
-You can confirm which version is installed with `mamp-ml --version`.
+Confirm the installed version with `mamp-ml --version`.
 
-### GPU / PyTorch compatibility
+> **Note:** A `WARNING: There was an error checking the latest version of pip` line is harmless — it's pip's own update check failing to reach PyPI on a restricted network, not an install failure. Suppress it with `PIP_DISABLE_PIP_VERSION_CHECK=1`.
 
-The `CUDA error: no kernel image is available for execution on the device` (`cudaErrorNoKernelImageForDevice`) crash means the active PyTorch has no kernels for your GPU's compute capability — e.g. a **Tesla V100 = CC 7.0 / sm_70** against a torch built only for sm_75+. This is most common when mamp-ml is installed into a *shared* environment (like the ColabFold one) whose torch was built for something else.
+### Key capabilities
 
-In the dedicated `mampml` environment from above, install a PyTorch whose wheels cover your GPU **before** installing mamp-ml, so the right torch is already satisfied (the default PyPI / cu121 / cu118 wheels include `sm_70` (V100) through current data-center cards):
-```
-pip install torch --index-url https://download.pytorch.org/whl/cu121   # cu121 covers V100 (sm_70) .. Hopper
-pip install --force-reinstall --no-cache-dir git+https://github.com/DanielleMStevens/mamp-ml.git@version2
-```
-
-**Before submitting a long job, preflight the install:**
-```
-mamp-ml install-check
-```
-It reports the mamp-ml version, the PyTorch build and whether it can actually use the visible GPU (catching the sm_70 trap up front), runs a live CUDA op, checks ColabFold discovery, and confirms the bundled weights. If `--device cuda` is requested but the GPU is unusable, `mamp-ml predict` now prints a warning and **automatically falls back to `--device cpu`** rather than crashing mid-run — the bundled 8M model runs fine on CPU.
+- **One command, end to end** — `mamp-ml predict input.xlsx` runs FASTA prep → folding → LRR annotation → B-factor analysis → ESM-2 inference and writes `predictions.csv`.
+- **Structure backends** — auto-discovers a `colabfold_batch` install (`mamp-ml find-colabfold`) and runs it for you, or folds in-process with ESMFold (`--structure esmfold`).
+- **Safe concurrent / SLURM-array runs** — every run uses a unique per-run working dir and output folder, so many jobs from one directory never collide. No config; works the same off-cluster.
+- **Reuse structures, sweep weights** — `--structures <prev-run>/structures` skips the expensive folding stage to re-predict the same receptors with different `--weights`.
+- **Compact progress + full log** — the terminal shows a per-receptor progress bar; the complete backend output, command, and version are written to `mamp-ml-run.log` (attach it to any bug report).
+- **install-check + auto-CPU fallback** — preflight the GPU/torch/ColabFold/weights, and never crash on an incompatible GPU.
+- **Structure-derived B-factor weighting** — the model weights ESM-2 features by each receptor's *own* per-run LRR breakpoints (works for novel receptors, not just the training set).
 
 The sample spreadsheet ships inside the package, so you can grab a local copy to inspect the expected input format (or to smoke-test the install) without cloning the repo:
 ```
