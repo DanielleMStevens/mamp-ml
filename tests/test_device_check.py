@@ -13,7 +13,10 @@ import types
 import pytest
 
 from mamp_ml.__main__ import (
+    _detect_nvidia_gpu,
     _gpu_compatibility_problem,
+    _recommend_torch_index_url,
+    _recommended_torch_command,
     _resolve_inference_device,
     main as cli_main,
 )
@@ -105,6 +108,53 @@ def test_resolve_keeps_compatible_gpu(monkeypatch) -> None:
 def test_resolve_passes_through_cpu() -> None:
     assert _resolve_inference_device("cpu") == "cpu"
     assert _resolve_inference_device(None) == "cpu"
+
+
+# ---------------------------------------------------------------------------
+# torch wheel recommendation (driver CUDA -> index URL)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "driver_cuda, expected_fragment",
+    [
+        ("12.4", "cu121"),
+        ("12.1", "cu121"),
+        ("12.0", "cu118"),
+        ("11.8", "cu118"),
+        ("11.2", None),   # too old to map cleanly
+        (None, None),
+        ("garbage", None),
+    ],
+)
+def test_recommend_torch_index_url(driver_cuda, expected_fragment) -> None:
+    url = _recommend_torch_index_url(driver_cuda)
+    if expected_fragment is None:
+        assert url is None
+    else:
+        assert url is not None and expected_fragment in url
+
+
+def test_recommended_command_for_gpu_uses_matching_wheel() -> None:
+    cmd = _recommended_torch_command({"driver_max_cuda": "12.4", "names": ["A100"]})
+    assert cmd and "cu121" in cmd and "torch" in cmd
+
+
+def test_recommended_command_without_gpu_is_cpu_wheel() -> None:
+    cmd = _recommended_torch_command(None)
+    assert cmd and "torch" in cmd and "--index-url" not in cmd  # CPU-only wheel
+
+
+def test_recommended_command_unmappable_driver_returns_none() -> None:
+    # GPU present but ancient/unknown driver -> we don't guess.
+    assert _recommended_torch_command({"driver_max_cuda": "10.2", "names": ["K80"]}) is None
+
+
+def test_detect_nvidia_gpu_returns_none_without_smi(monkeypatch) -> None:
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda _: None)
+    assert _detect_nvidia_gpu() is None
 
 
 # ---------------------------------------------------------------------------

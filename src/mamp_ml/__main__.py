@@ -282,15 +282,26 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     # install-check ----------------------------------------------------
-    sub.add_parser(
+    sp = sub.add_parser(
         "install-check",
         help="Verify the install can run (PyTorch/GPU, ColabFold, weights).",
         description=(
-            "Preflight the install before submitting a long job: reports the "
-            "mamp-ml version, the PyTorch build and whether it can actually use "
-            "the visible GPU (catching the V100/sm_70 'no kernel image' trap "
-            "before it crashes mid-run), runs a live CUDA op, checks ColabFold "
-            "discovery, and confirms the bundled weights are present."
+            "Preflight the install before submitting a long job: detects the GPU "
+            "via nvidia-smi, reports the mamp-ml version and whether the installed "
+            "PyTorch can actually drive that GPU (catching the V100/sm_70 'no "
+            "kernel image' trap before it crashes mid-run), runs a live CUDA op, "
+            "checks ColabFold discovery, and confirms the bundled weights. When "
+            "PyTorch can't use the GPU it prints the exact `pip install torch` "
+            "line matching the driver's CUDA version."
+        ),
+    )
+    sp.add_argument(
+        "--install-torch",
+        action="store_true",
+        help=(
+            "If the installed PyTorch can't drive the detected GPU, run the "
+            "recommended `pip install torch --index-url …` automatically instead "
+            "of only printing it."
         ),
     )
 
@@ -1612,6 +1623,111 @@ def _resolve_torch_device(device_arg: Optional[str]) -> str:
     return "cpu"
 
 
+def _detect_nvidia_gpu() -> "dict | None":
+    """Detect the GPU(s) and the driver's max CUDA version via ``nvidia-smi``.
+
+    Deliberately does NOT use torch — this is what lets ``install-check``
+    recommend the right PyTorch wheel even when the *currently installed* torch
+    is broken, CPU-only, or absent. Returns a dict with ``names``,
+    ``compute_caps``, ``driver_version`` and ``driver_max_cuda`` (the CUDA
+    version the driver supports, e.g. ``"12.4"``), or ``None`` if ``nvidia-smi``
+    isn't present (e.g. a CPU-only host or a login node without GPUs).
+    """
+    import re
+    import shutil
+    import subprocess
+
+    smi = shutil.which("nvidia-smi")
+    if not smi:
+        return None
+    info: dict = {
+        "names": [],
+        "compute_caps": [],
+        "driver_version": None,
+        "driver_max_cuda": None,
+    }
+    # Structured query — `compute_cap` is supported on reasonably recent drivers.
+    try:
+        out = subprocess.run(
+            [smi, "--query-gpu=name,compute_cap,driver_version",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if out.returncode == 0 and out.stdout.strip():
+            for line in out.stdout.strip().splitlines():
+                parts = [p.strip() for p in line.split(",")]
+                if parts and parts[0]:
+                    info["names"].append(parts[0])
+                if len(parts) >= 2 and parts[1] and parts[1].replace(".", "").isdigit():
+                    info["compute_caps"].append(parts[1])
+                if len(parts) >= 3 and parts[2] and not info["driver_version"]:
+                    info["driver_version"] = parts[2]
+    except (OSError, subprocess.SubprocessError):
+        pass
+    # The driver's max CUDA version is printed in the plain `nvidia-smi` header.
+    try:
+        out = subprocess.run([smi], capture_output=True, text=True, timeout=15)
+        m = re.search(r"CUDA Version:\s*([0-9]+\.[0-9]+)", out.stdout)
+        if m:
+            info["driver_max_cuda"] = m.group(1)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    if not info["names"] and not info["driver_max_cuda"]:
+        return None
+    return info
+
+
+def _recommend_torch_index_url(driver_max_cuda: "str | None") -> "str | None":
+    """Pick a PyTorch wheel index URL from the driver's max CUDA version.
+
+    Conservative: a wheel's CUDA runtime must be <= what the driver supports.
+    Returns ``None`` when we can't tell or the driver is too old to map cleanly
+    (the caller then advises a manual choice).
+    """
+    if not driver_max_cuda:
+        return None
+    try:
+        major, minor = (int(x) for x in driver_max_cuda.split(".")[:2])
+    except (ValueError, TypeError):
+        return None
+    cuda = major * 100 + minor  # "12.4" -> 1204
+    if cuda >= 1201:
+        return "https://download.pytorch.org/whl/cu121"
+    if cuda >= 1108:
+        return "https://download.pytorch.org/whl/cu118"
+    return None
+
+
+def _recommended_torch_command(gpu_info: "dict | None") -> "str | None":
+    """The exact ``pip install`` line that installs the right PyTorch.
+
+    GPU present + a known driver CUDA -> the matching ``cuXXX`` wheel. No GPU at
+    all -> the CPU-only wheel. GPU present but driver too old / unmappable ->
+    ``None`` (caller advises picking a wheel manually).
+    """
+    index = _recommend_torch_index_url((gpu_info or {}).get("driver_max_cuda"))
+    if index is not None:
+        return f"pip install --force-reinstall --no-cache-dir torch --index-url {index}"
+    if not gpu_info:
+        return "pip install --force-reinstall --no-cache-dir torch"
+    return None
+
+
+def _pip_install_torch(cmd: str) -> int:
+    """Run a ``pip install ... torch ...`` line via the current interpreter."""
+    import subprocess
+    import sys
+
+    parts = cmd.split()
+    if parts and parts[0] == "pip":
+        parts = [sys.executable, "-m", "pip"] + parts[1:]
+    try:
+        return subprocess.run(parts).returncode
+    except OSError as exc:
+        print(f"Failed to run pip: {exc}")
+        return 1
+
+
 def _run_install_check(args) -> int:
     """Implementation of ``python -m mamp_ml install-check``.
 
@@ -1632,7 +1748,23 @@ def _run_install_check(args) -> int:
     print(f"mamp-ml install-check  (mamp-ml {__version__})")
     print("=" * 50)
 
-    # --- PyTorch + GPU --------------------------------------------------
+    # --- GPU hardware (detected WITHOUT torch, via nvidia-smi) ----------
+    # This is what lets us recommend the right PyTorch even when the currently
+    # installed torch is broken, CPU-only, or absent.
+    gpu_info = _detect_nvidia_gpu()
+    if gpu_info:
+        names = ", ".join(gpu_info["names"] or ["(unknown)"])
+        caps = gpu_info["compute_caps"]
+        cap_str = f", compute capability {'/'.join(caps)}" if caps else ""
+        drv = gpu_info["driver_version"] or "?"
+        cu = gpu_info["driver_max_cuda"] or "?"
+        print(f"{ok} GPU (nvidia-smi): {names}{cap_str}; driver {drv}, supports up to CUDA {cu}")
+    else:
+        print(f"{warn} No NVIDIA GPU detected by nvidia-smi (CPU-only host / login node).")
+        n_warn += 1
+
+    # --- PyTorch + whether it can drive the detected GPU ----------------
+    torch_problem = False  # set when a (re)install of torch is warranted
     try:
         import torch
 
@@ -1641,30 +1773,38 @@ def _run_install_check(args) -> int:
         print(f"{fail} PyTorch is not installed — inference cannot run")
         torch = None
         n_fail += 1
+        torch_problem = True
 
     if torch is not None:
         if not torch.cuda.is_available():
-            print(
-                f"{warn} No usable CUDA GPU (torch.cuda.is_available() is False). "
-                "Inference will run on CPU — fine for the bundled 8M model."
-            )
-            n_warn += 1
+            if gpu_info:
+                print(
+                    f"{fail} A GPU is present but this PyTorch can't use it "
+                    "(torch.cuda.is_available() is False — likely a CPU-only build)."
+                )
+                n_fail += 1
+                torch_problem = True
+            else:
+                print(
+                    f"{warn} No usable CUDA GPU; inference will run on CPU — "
+                    "fine for the bundled 8M model."
+                )
+                n_warn += 1
         else:
             count = torch.cuda.device_count()
             arches = list(torch.cuda.get_arch_list())
             print(f"{ok} CUDA available: {count} device(s); torch built for [{', '.join(arches) or '?'}]")
             for i in range(count):
-                problem = _gpu_compatibility_problem("cuda")  # checks device 0
                 name = torch.cuda.get_device_name(i)
                 major, minor = torch.cuda.get_device_capability(i)
                 sm = f"sm_{major}{minor}"
                 if arches and sm not in arches:
                     print(
                         f"{fail} GPU{i} {name} (CC {major}.{minor}/{sm}) is NOT supported "
-                        f"by this PyTorch — would crash with cudaErrorNoKernelImageForDevice. "
-                        "Reinstall a torch build that includes this architecture."
+                        "by this PyTorch — would crash with cudaErrorNoKernelImageForDevice."
                     )
                     n_fail += 1
+                    torch_problem = True
                 else:
                     print(f"{ok} GPU{i} {name} (CC {major}.{minor}/{sm}) supported")
             # Live smoke test: a real kernel launch catches mismatches the arch
@@ -1675,6 +1815,41 @@ def _run_install_check(args) -> int:
             except Exception as exc:
                 print(f"{fail} Live CUDA op failed: {type(exc).__name__}: {exc}")
                 n_fail += 1
+                torch_problem = True
+
+    # --- Recommend (or install) a matching PyTorch ----------------------
+    if torch_problem:
+        cmd = _recommended_torch_command(gpu_info)
+        print()
+        if cmd is None:
+            print(
+                "  → Couldn't auto-pick a PyTorch wheel for this driver. Choose the "
+                "index URL matching your driver's CUDA version at "
+                "https://pytorch.org/get-started/locally/"
+            )
+        else:
+            if gpu_info and gpu_info.get("driver_max_cuda"):
+                print(
+                    f"  → Recommended PyTorch for your GPU (driver supports up to "
+                    f"CUDA {gpu_info['driver_max_cuda']}):"
+                )
+            else:
+                print("  → Recommended PyTorch:")
+            print(f"      {cmd}")
+            if getattr(args, "install_torch", False):
+                print("  Installing it now (--install-torch)…")
+                rc = _pip_install_torch(cmd)
+                if rc == 0:
+                    print(
+                        f"{ok} torch (re)installed. Re-run `mamp-ml install-check` to verify."
+                    )
+                else:
+                    print(f"{fail} torch install failed (exit {rc}); run the command above manually.")
+            else:
+                print(
+                    "  Add --install-torch to run this automatically: "
+                    "`mamp-ml install-check --install-torch`"
+                )
 
     # --- ColabFold ------------------------------------------------------
     from mamp_ml.fold.colabfold import find_colabfold_installs
