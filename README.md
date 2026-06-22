@@ -36,7 +36,18 @@ _Center for Computational Biology, University of California, Berkeley_
 
 ## General installation and running instructions:
 
-To install mamp-ml and (optionally) ColabFold for receptor structure prediction, run:
+> ### ⚠️ First: install into a dedicated environment
+>
+> **Install mamp-ml into its own conda/venv — never into your `base` environment, and never with `pip install --user`.** mamp-ml brings a full pinned scientific stack (numpy, scipy, scikit-learn, biopython, torch, transformers, …). Dropping it into a *shared* environment upgrades those packages and can break **other tools installed there** — pip will even tell you so. For example, a co-installed `boltz` pins exact versions (`scipy==1.13.1`, `scikit-learn==1.6.1`, `biopython==1.84`, …); installing mamp-ml in the same environment upgrades those and breaks boltz. A `--user` install is worse — it lands in `~/.local`, which shadows **every** Python on the machine (including other conda envs).
+>
+> A dedicated environment keeps mamp-ml fully isolated and **leaves your other tools (boltz, ColabFold, …) untouched**:
+> ```
+> conda create -n mampml python=3.10 -y && conda activate mampml
+> export PYTHONNOUSERSITE=1        # ignore any stray ~/.local packages
+> ```
+> Run every command below **inside this activated environment**. mamp-ml finds ColabFold by absolute path (`mamp-ml find-colabfold`), so it never needs to share an environment with ColabFold or boltz.
+
+To install mamp-ml and (optionally) ColabFold for receptor structure prediction, run (inside the dedicated environment above):
 ```
 bash install_software.sh
 ```
@@ -54,13 +65,12 @@ pip install --upgrade --force-reinstall --no-cache-dir git+https://github.com/Da
 ```
 You can confirm which version is installed with `mamp-ml --version`.
 
-### GPU / PyTorch compatibility (install mamp-ml in its own environment)
+### GPU / PyTorch compatibility
 
-**Install mamp-ml into its own conda/venv environment — not into the ColabFold (`localcolabfold`) environment.** mamp-ml finds `colabfold_batch` automatically by absolute path (see `mamp-ml find-colabfold`), so the two never need to share an environment, and the ColabFold environment's PyTorch is built for ColabFold's needs, not yours. Installing mamp-ml there is the usual cause of `CUDA error: no kernel image is available for execution on the device` (`cudaErrorNoKernelImageForDevice`) — that means the active PyTorch has no kernels for your GPU's compute capability (e.g. a **Tesla V100 = CC 7.0 / sm_70** against a torch built only for sm_75+).
+The `CUDA error: no kernel image is available for execution on the device` (`cudaErrorNoKernelImageForDevice`) crash means the active PyTorch has no kernels for your GPU's compute capability — e.g. a **Tesla V100 = CC 7.0 / sm_70** against a torch built only for sm_75+. This is most common when mamp-ml is installed into a *shared* environment (like the ColabFold one) whose torch was built for something else.
 
-Set up a clean environment with a PyTorch whose wheels cover your GPU. The default PyPI / cu121 / cu118 wheels include `sm_70` (V100) through current data-center cards:
+In the dedicated `mampml` environment from above, install a PyTorch whose wheels cover your GPU **before** installing mamp-ml, so the right torch is already satisfied (the default PyPI / cu121 / cu118 wheels include `sm_70` (V100) through current data-center cards):
 ```
-conda create -n mampml python=3.10 -y && conda activate mampml
 pip install torch --index-url https://download.pytorch.org/whl/cu121   # cu121 covers V100 (sm_70) .. Hopper
 pip install --force-reinstall --no-cache-dir git+https://github.com/DanielleMStevens/mamp-ml.git@version2
 ```
