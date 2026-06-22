@@ -95,20 +95,32 @@ Example usage
   # Use a custom-trained model instead of the bundled weights
   mamp-ml predict input_data.xlsx --weights /path/to/checkpoint.pth
 
-  # Keep every intermediate file (default keeps only predictions + plots)
+  # Keep every intermediate file (default keeps only the output folder)
   mamp-ml predict input_data.xlsx --keep all
+
+  # Reuse a previous run's folds to try different weights (skips folding)
+  mamp-ml predict input_data.xlsx \
+      --structures output_input_data_.../structures --weights other.pth
 
 Output
 ------
-  predict writes an `<output-name>/` folder (default: a unique
-  `output_<timestamp>/`) containing:
+  predict writes an `<output-name>/` folder (default: a unique per-run
+  `output_<input>_<timestamp-or-SLURM-job>_<random>/`) containing:
     - predictions.csv      one row per receptor-ligand pair, with the predicted
                            class (Immunogenic / Non-Immunogenic / Weakly
                            Immunogenic) and the per-class probabilities
     - lrr_annotation_plots/  per-receptor LRR regression plots
+    - structures/          the folded receptor structures (PDBs + log.txt);
+                           pass this folder to --structures on a later run to
+                           skip folding
     - mamp-ml-run.log      full run transcript (command, version, every step,
                            and the complete ColabFold/ESMFold output) — attach
                            this when reporting an error
+
+Concurrency: each run uses a unique working dir (intermediate_files/<token>/)
+and a unique output folder, so multiple runs from the same directory — e.g.
+SLURM array jobs — never collide. Works the same off-cluster; no SLURM needed.
+Pass --out-dir / --output-name to pin explicit names.
 
 The folding step shows a compact per-receptor progress bar; the backend's
 verbose output is written to mamp-ml-run.log instead of the terminal.
@@ -160,19 +172,31 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument("xlsx", help="Path to input .xlsx file")
     sp.add_argument(
         "--out-dir",
-        default="intermediate_files",
+        default=None,
         help=(
             "Directory for pipeline intermediates and the final "
-            "ready_test_data.csv (default: intermediate_files)."
+            "ready_test_data.csv. Defaults to a unique per-run directory "
+            "intermediate_files/<input>_<timestamp-or-SLURM-job>_<random> so "
+            "concurrent runs (e.g. SLURM array jobs) never clobber each other; "
+            "pass an explicit path to override."
         ),
     )
     sp.add_argument(
-        "--colabfold-dir",
+        "--structures",
         default=None,
         help=(
-            "Directory containing colabfold log.txt + raw PDBs. "
-            "Defaults to <out_dir>/receptor_only."
+            "Reuse existing folded structures from this directory (the "
+            "structures/ folder a previous run produced) and SKIP the "
+            "structural-modeling stage. Handy for re-running with different "
+            "--weights without re-folding."
         ),
+    )
+    # Back-compat alias for --structures; hidden from help to avoid two names
+    # for the same thing.
+    sp.add_argument(
+        "--colabfold-dir",
+        default=None,
+        help=argparse.SUPPRESS,
     )
     sp.add_argument(
         "--structure-cache-dir",
@@ -407,16 +431,29 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument(
         "--out-dir",
-        default="intermediate_files",
-        help="Directory for pipeline intermediates (default: intermediate_files).",
+        default=None,
+        help=(
+            "Directory for pipeline intermediates. Defaults to a unique "
+            "per-run directory intermediate_files/<input>_<timestamp-or-SLURM-"
+            "job>_<random> so concurrent runs (e.g. SLURM array jobs) never "
+            "clobber each other; pass an explicit path to override."
+        ),
     )
+    sp.add_argument(
+        "--structures",
+        default=None,
+        help=(
+            "Reuse existing folded structures from this directory (the "
+            "structures/ folder a previous run produced) and SKIP the "
+            "structural-modeling stage. Lets you re-predict with different "
+            "--weights without re-running ColabFold/ESMFold."
+        ),
+    )
+    # Back-compat alias for --structures; hidden from help.
     sp.add_argument(
         "--colabfold-dir",
         default=None,
-        help=(
-            "Directory containing colabfold log.txt + raw PDBs. "
-            "Defaults to <out_dir>/receptor_only."
-        ),
+        help=argparse.SUPPRESS,
     )
     sp.add_argument(
         "--structure-cache-dir",
@@ -710,19 +747,120 @@ def _count_csv_rows(csv_path: "Path") -> int:
     return max(0, total - 1)
 
 
+def _sanitize_token_part(text: str, *, max_length: int = 40) -> str:
+    """Make ``text`` safe + tidy for use inside a directory name.
+
+    Keeps alphanumerics, dot, dash and underscore; collapses every other run of
+    characters to a single underscore; trims leading/trailing separators; and
+    caps the length so a long spreadsheet name doesn't produce an unwieldy
+    folder. Falls back to ``"run"`` if nothing usable remains.
+    """
+    import re
+
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", text).strip("._-")
+    cleaned = cleaned[:max_length].strip("._-")
+    return cleaned or "run"
+
+
+def _run_discriminator() -> str:
+    """A human-readable, per-run discriminator that needs no scheduler.
+
+    Prefers SLURM identifiers when present (so a folder maps straight back to a
+    job in ``sacct``), and otherwise falls back to a wall-clock timestamp. This
+    is only the *readable* part of the run token — uniqueness is guaranteed by
+    the random suffix appended in :func:`_make_run_token`, so this works
+    identically on a laptop, a workstation, the cloud, or an HPC node.
+    """
+    import datetime
+    import os
+
+    array_job = os.environ.get("SLURM_ARRAY_JOB_ID")
+    array_task = os.environ.get("SLURM_ARRAY_TASK_ID")
+    if array_job and array_task:
+        return f"job{array_job}_{array_task}"
+    job = os.environ.get("SLURM_JOB_ID")
+    if job:
+        return f"job{job}"
+    return datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+
+def _make_run_token(args) -> str:
+    """Build the shared, human-readable run token (without creating anything).
+
+    Form: ``<input-stem>_<slurm-id-or-timestamp>_<4 random hex>`` — e.g.
+    ``Cabernet_filtered_RLKs_2026-06-22_14-03-01_a4f9`` locally or
+    ``Cabernet_filtered_RLKs_job4471823_a4f9`` under SLURM. The working
+    directory and the final output folder share this token so they correspond,
+    and the random suffix makes the name unique on any setup with no config.
+    """
+    import secrets
+    from pathlib import Path
+
+    xlsx = getattr(args, "xlsx", None)
+    stem = _sanitize_token_part(Path(xlsx).stem) if xlsx else "run"
+    return f"{stem}_{_run_discriminator()}_{secrets.token_hex(2)}"
+
+
+def _resolve_working_dir(args):
+    """Resolve (and create) this run's working directory, uniquely by default.
+
+    If ``--out-dir`` was given explicitly, it is honoured verbatim. Otherwise a
+    unique per-run directory ``intermediate_files/<run-token>`` is created
+    atomically (``mkdir`` with ``exist_ok=False``, retrying with a fresh random
+    suffix on the astronomically rare collision), so concurrent runs — e.g.
+    SLURM array tasks launched from the same directory — never share a working
+    dir and can't clobber each other or pick up each other's folds.
+
+    Idempotent: once resolved, ``args.out_dir`` is set, so a second call (the
+    standalone ``prepare`` path re-invoking after ``predict`` already resolved
+    it) returns the same directory. The chosen run token is cached on
+    ``args._run_token`` so the output folder can share it.
+    """
+    import os
+    from pathlib import Path
+
+    existing = getattr(args, "out_dir", None)
+    if existing:
+        out_dir = Path(existing)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        return out_dir
+
+    parent = Path("intermediate_files")
+    last_exc: "OSError | None" = None
+    for _ in range(64):
+        token = _make_run_token(args)
+        candidate = parent / token
+        try:
+            os.makedirs(candidate, exist_ok=False)
+        except FileExistsError as exc:
+            last_exc = exc
+            continue
+        args._run_token = token
+        args.out_dir = str(candidate)
+        return candidate
+    raise RuntimeError(
+        f"Could not create a unique working directory under {parent}/"
+    ) from last_exc
+
+
 def _resolve_output_dirname(args) -> str:
     """Name of the folder this run's outputs are written into.
 
-    The folder holds ``predictions.csv`` and ``lrr_annotation_plots/``. Uses
-    ``--output-name`` if given, otherwise a unique, timestamped default like
-    ``output_2026-06-15_20-30-00`` so repeated runs don't clobber each other.
+    The folder holds ``predictions.csv``, ``lrr_annotation_plots/``,
+    ``structures/`` and ``mamp-ml-run.log``. Uses ``--output-name`` if given,
+    otherwise ``output_<run-token>`` — sharing the token with the working
+    directory so the two correspond, and inheriting its per-run uniqueness so
+    concurrent runs never collide on the output folder either.
     """
-    import datetime
-
     name = getattr(args, "output_name", None)
     if name:
         return name
-    return "output_" + datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    token = getattr(args, "_run_token", None)
+    if not token:
+        # Standalone / direct call without a resolved working dir: mint a token
+        # on the spot so the name is still unique.
+        token = _make_run_token(args)
+    return f"output_{token}"
 
 
 def _run_prepare(args, *, progress=None) -> int:
@@ -767,8 +905,10 @@ def _run_prepare(args, *, progress=None) -> int:
     from mamp_ml.lrr_features import write_bfactor_lrr_segments
 
     xlsx_path = Path(args.xlsx)
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    # Resolve (and create) a unique per-run working directory unless the user
+    # gave an explicit --out-dir. Idempotent: predict resolves this before
+    # calling us, so this just returns the already-created dir.
+    out_dir = _resolve_working_dir(args)
 
     # Open the run log inside the (always-created) working directory so it
     # survives even an early hard failure like an OOM-killed ColabFold; it is
@@ -789,11 +929,12 @@ def _run_prepare(args, *, progress=None) -> int:
     )
     progress.attach_logger(log)
 
-    colabfold_dir = (
-        Path(args.colabfold_dir)
-        if args.colabfold_dir
-        else out_dir / "receptor_only"
-    )
+    # Reuse pre-folded structures when the user points us at them (--structures,
+    # or the hidden back-compat --colabfold-dir): we then skip the structural-
+    # modeling stage entirely. Otherwise structures live under this run's
+    # working dir and are folded fresh.
+    reuse_dir = getattr(args, "structures", None) or getattr(args, "colabfold_dir", None)
+    colabfold_dir = Path(reuse_dir) if reuse_dir else out_dir / "receptor_only"
     colabfold_dir.mkdir(parents=True, exist_ok=True)
 
     structure_cache_dir = Path(args.structure_cache_dir)
@@ -1034,9 +1175,13 @@ def _run_prepare(args, *, progress=None) -> int:
             outputs=[
                 ("Model-ready CSV", ready_csv),
                 ("LRR annotation plots", f"{plot_dir}/"),
+                ("Folded structures", f"{colabfold_dir}/"),
                 ("All intermediates", f"{out_dir}/"),
                 ("Run log", log.path),
             ],
+        )
+        progress.note(
+            f"  reuse these structures later with: --structures {colabfold_dir}"
         )
         log.close()
     return 0
@@ -1091,6 +1236,11 @@ def _run_predict(args) -> int:
 
     progress = PipelineProgress(6)
     progress.banner("mamp-ml predict", _pipeline_subtitle(args))
+
+    # Resolve the unique per-run working directory up front (before prepare, and
+    # before computing the output-folder name) so the working dir and the output
+    # folder share one run token and concurrent runs never collide.
+    _resolve_working_dir(args)
 
     # The prepare args parser declares a superset of what we need here, but
     # the same attribute names — so feed args directly into _run_prepare
@@ -1191,38 +1341,61 @@ def _run_predict(args) -> int:
     plots_dir = out_dir / "lrr_annotation_plots"
     infer.done(f"{_count_csv_rows(predictions_csv)} prediction(s)", target=predictions_csv)
 
-    # --keep default: the two real deliverables (predictions.csv + the LRR
-    # plots) are promoted to the invocation directory and the whole
-    # intermediate_files/ scratch dir is removed, so the user's outputs aren't
-    # buried under a folder named "intermediate_files".
-    # --keep all: leave everything in out_dir untouched (useful for debugging
-    # or re-running prediction on a different ligand sheet without re-folding).
     # Always bundle the deliverables into a labeled output folder in the
-    # invocation dir: <name>/predictions.csv + <name>/lrr_annotation_plots/.
-    # --keep then only governs whether the intermediate_files/ working dir
-    # survives (default: removed; all: kept for debugging / re-running without
-    # re-folding).
+    # invocation dir. The folder is self-contained: predictions.csv, the LRR
+    # plots, the folded structures/ (so they can be reused with other weights
+    # without re-folding), and the full run log. `--keep` then governs only
+    # whether the *remaining* working-dir scratch survives:
+    #   default  -> structures + log promoted, the rest of the working dir removed
+    #   all      -> additionally retain the working dir (fasta, csvs, pdbs) for
+    #               debugging / re-running on a different ligand sheet.
     results_dir = invocation_dir / _resolve_output_dirname(args)
     final_predictions = _promote_output(
         predictions_csv, results_dir / "predictions.csv"
     )
     final_plots = _promote_output(plots_dir, results_dir / "lrr_annotation_plots")
+
+    # Promote the folded structures unless they were *reused* from an external
+    # directory the user pointed at (in which case they already live there and
+    # we must not move/destroy that source).
+    reuse_dir = getattr(args, "structures", None) or getattr(args, "colabfold_dir", None)
+    structures_out = results_dir / "structures"
+    if reuse_dir:
+        final_structures = Path(reuse_dir)
+    else:
+        final_structures = _promote_output(out_dir / "receptor_only", structures_out)
+
     log_dest = results_dir / "mamp-ml-run.log"
     outputs = [
         ("Output folder", f"{results_dir}/"),
         ("  predictions", (final_predictions or predictions_csv).name),
         ("  LRR annotation plots", f"{(final_plots or plots_dir).name}/"),
-        ("  run log", log_dest.name),
     ]
+    if final_structures is not None and not reuse_dir:
+        outputs.append(("  structures", f"{structures_out.name}/"))
+    outputs.append(("  run log", log_dest.name))
 
     keep_mode = getattr(args, "keep", "default")
     if keep_mode == "all":
         outputs.append(("Intermediates kept", f"{out_dir}/"))
     else:
         outputs.append(
-            ("(intermediates removed", "rerun with `--keep all` to retain them)")
+            ("(remaining intermediates removed", "rerun with `--keep all` to retain them)")
         )
     progress.complete("Prediction complete", outputs=outputs)
+
+    # Surface the one-liner that reuses these structures with different weights
+    # (skips the structural-modeling stage). Points at the promoted copy when we
+    # saved one, else at the directory the user reused.
+    reuse_target = structures_out if final_structures is not None and not reuse_dir else final_structures
+    if reuse_target is not None:
+        progress.note(
+            "  reuse these structures with different weights (skips folding):"
+        )
+        progress.note(
+            f"    mamp-ml predict {args.xlsx} --structures {reuse_target} "
+            "--weights <other.pth>"
+        )
 
     # Finalise the run log: flush the closing summary, then copy it into the
     # final output folder so the deliverables are self-describing (command +
@@ -1240,13 +1413,20 @@ def _run_predict(args) -> int:
         pass
 
     if keep_mode != "all":
-        # Remove the intermediate_files working directory now that the
-        # deliverables (including the run log) are out of it — unless --out-dir
-        # points at the invocation dir or the results folder itself (don't
-        # delete what we just wrote).
+        # Remove the working directory now that the deliverables (structures +
+        # run log included) are out of it — unless --out-dir points at the
+        # invocation dir or the results folder itself (don't delete what we just
+        # wrote). Then tidy up the now-empty intermediate_files/ parent so the
+        # cwd stays clean.
         protected = {invocation_dir.resolve(), results_dir.resolve()}
         if out_dir.resolve() not in protected:
             shutil.rmtree(out_dir, ignore_errors=True)
+            parent = out_dir.parent
+            try:
+                if parent.name == "intermediate_files" and not any(parent.iterdir()):
+                    parent.rmdir()
+            except OSError:
+                pass
     return 0
 
 

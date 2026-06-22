@@ -27,6 +27,12 @@ def _stub_pipeline(monkeypatch, *, with_plots=True):
         (od / "ready_test_data.csv").write_text("a,b\n1,2\n")
         (od / "test_data.csv").write_text("intermediate\n")  # should not survive default
         (od / "receptor_full_length.fasta").write_text(">r\nACDE\n")
+        # Folded structures the real prepare leaves in <out_dir>/receptor_only;
+        # predict promotes these to <output>/structures/ by default.
+        structs = od / "receptor_only"
+        structs.mkdir(exist_ok=True)
+        (structs / "log.txt").write_text("Query 1/1: r (length 4)\n")
+        (structs / "r_unrelaxed_rank_001_model_1.pdb").write_text("ATOM\n")
         if with_plots:
             plots = od / "lrr_annotation_plots"
             plots.mkdir()
@@ -79,10 +85,12 @@ def test_predict_default_bundles_outputs_in_named_folder(
     assert "Output folder" in out
 
 
-def test_predict_default_output_folder_is_unique_timestamped(
+def test_predict_default_output_folder_is_unique_per_run(
     tmp_path, example_xlsx, monkeypatch
 ) -> None:
-    """With no --output-name, outputs go into a unique `output_<timestamp>/`."""
+    """With no --output-name, outputs go into a unique per-run
+    `output_<input>_<disc>_<rand>/` folder, holding predictions + plots +
+    promoted structures; the unique working dir (and its empty parent) is gone."""
     import re
 
     from mamp_ml.__main__ import main as cli_main
@@ -96,10 +104,15 @@ def test_predict_default_output_folder_is_unique_timestamped(
     assert rc == 0
 
     folders = [p for p in tmp_path.glob("output_*") if p.is_dir()]
-    assert len(folders) == 1, f"expected one timestamped output folder, got {folders}"
-    assert re.match(r"output_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}$", folders[0].name)
+    assert len(folders) == 1, f"expected one per-run output folder, got {folders}"
+    # output_<input-stem>_<timestamp-or-job>_<4 hex>
+    assert re.match(r"output_.+_[0-9a-f]{4}$", folders[0].name)
+    assert example_xlsx.stem in folders[0].name
     assert (folders[0] / "predictions.csv").is_file()
     assert (folders[0] / "lrr_annotation_plots").is_dir()
+    # Structures are promoted into the output folder by default.
+    assert (folders[0] / "structures" / "log.txt").is_file()
+    # The unique working dir was removed, and its empty parent tidied up.
     assert not (tmp_path / "intermediate_files").exists()
 
 
@@ -111,14 +124,16 @@ def test_resolve_output_dirname_uses_flag() -> None:
     assert _resolve_output_dirname(types.SimpleNamespace(output_name="run1")) == "run1"
 
 
-def test_resolve_output_dirname_default_is_timestamped() -> None:
+def test_resolve_output_dirname_default_is_unique_token() -> None:
     import re
     import types
 
     from mamp_ml.__main__ import _resolve_output_dirname
 
+    # No xlsx / no resolved working dir -> stem falls back to "run", a token is
+    # minted on the spot: output_run_<timestamp>_<4 hex>.
     name = _resolve_output_dirname(types.SimpleNamespace(output_name=None))
-    assert re.match(r"output_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}$", name)
+    assert re.match(r"output_run_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_[0-9a-f]{4}$", name)
 
 
 def test_predict_subparser_accepts_output_name(example_xlsx) -> None:
@@ -160,13 +175,20 @@ def test_predict_keep_all_makes_output_folder_and_keeps_intermediates(
     assert (tmp_path / "myrun" / "predictions.csv").is_file()
     assert (tmp_path / "myrun" / "lrr_annotation_plots" / "receptor_plot.png").is_file()
 
-    # intermediate_files/ is retained, holding the non-deliverable intermediates...
+    # intermediate_files/<run-token>/ is retained, holding the non-deliverable
+    # intermediates...
     inter = tmp_path / "intermediate_files"
     assert inter.is_dir()
-    assert (inter / "test_data.csv").is_file()
-    # ...but the deliverables were MOVED out of it, not left behind.
-    assert not (inter / "predictions.csv").exists()
-    assert not (inter / "lrr_annotation_plots").exists()
+    work_dirs = [p for p in inter.iterdir() if p.is_dir()]
+    assert len(work_dirs) == 1, f"expected one per-run working dir, got {work_dirs}"
+    work = work_dirs[0]
+    assert (work / "test_data.csv").is_file()
+    # ...but the deliverables (and the structures) were MOVED out of it.
+    assert not (work / "predictions.csv").exists()
+    assert not (work / "lrr_annotation_plots").exists()
+    assert not (work / "receptor_only").exists()
+    # Structures live in exactly one place: the output folder.
+    assert (tmp_path / "myrun" / "structures" / "log.txt").is_file()
 
 
 def test_predict_default_handles_custom_out_dir(

@@ -366,6 +366,42 @@ def test_cli_prepare_writes_run_log_and_captures_colabfold_output(
     assert verbose_line in log_text
 
 
+def test_cli_prepare_structures_flag_reuses_and_skips_folding(
+    tmp_path: Path,
+    example_xlsx: Path,
+    colabfold_outputs_dir: Path,
+    monkeypatch,
+) -> None:
+    """Pointing --structures at a previously-folded directory skips the
+    structural-modeling stage entirely (ColabFold is never invoked) and reuses
+    those structures for the rest of the pipeline."""
+    import mamp_ml.fold.colabfold as cf
+
+    # If anything tries to fold, fail loudly — reuse must not touch ColabFold.
+    def _boom(*a, **k):  # pragma: no cover - asserts it's never called
+        raise AssertionError("ColabFold was invoked despite --structures reuse")
+
+    monkeypatch.setattr(cf, "find_colabfold_installs", _boom)
+    monkeypatch.setattr(cf, "run_colabfold_batch", _boom)
+
+    out_dir = tmp_path / "inter"
+    rc = cli_main(
+        [
+            "prepare",
+            str(example_xlsx),
+            "--out-dir",
+            str(out_dir),
+            "--structures",
+            str(colabfold_outputs_dir),
+            "--structure-cache-dir",
+            str(tmp_path / "fresh_cache"),
+        ]
+    )
+    assert rc == 0
+    # The pipeline ran to completion off the reused structures.
+    assert (out_dir / "ready_test_data.csv").is_file()
+
+
 def _run_prepare_capturing_fold_fasta(
     tmp_path, example_xlsx, colabfold_outputs_dir, monkeypatch, extra_args
 ):

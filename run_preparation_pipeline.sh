@@ -24,4 +24,7 @@ fi
 cd "$(dirname "$0")"
 export PYTHONPATH="$PWD/src:${PYTHONPATH:-}"
 
-exec python -m mamp_ml prepare "$1"
+# Pin the legacy fixed layout (intermediate_files/receptor_only/) that this
+# wrapper documents. The modern `mamp-ml prepare` CLI instead defaults to a
+# unique per-run working directory so concurrent runs don't collide.
+exec python -m mamp_ml prepare "$1" --out-dir intermediate_files
