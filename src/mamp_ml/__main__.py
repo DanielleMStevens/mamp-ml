@@ -83,8 +83,9 @@ _USAGE_EXAMPLES = """\
 Example usage
 -------------
 
-  # Preflight the install (PyTorch/GPU compatibility, ColabFold, weights)
-  mamp-ml install-check
+  # Verify the install and auto-match PyTorch to your GPU (run where the GPU is)
+  mamp-ml install-check                  # reports the GPU + whether PyTorch can drive it
+  mamp-ml install-check --install-torch  # if not, install the matching torch wheel for you
 
   # Smoke-test your install on the bundled sample (no data of your own needed)
   mamp-ml predict --example --device cuda
@@ -126,7 +127,9 @@ SLURM array jobs — never collide. Works the same off-cluster; no SLURM needed.
 Pass --out-dir / --output-name to pin explicit names.
 
 The folding step shows a compact per-receptor progress bar; the backend's
-verbose output is written to mamp-ml-run.log instead of the terminal.
+verbose output is written to mamp-ml-run.log instead of the terminal. If
+`--device cuda` is requested but the GPU can't be used, predict warns and
+falls back to `--device cpu` rather than crashing.
 
 See the README at https://github.com/DanielleMStevens/mamp-ml for the
 full workflow + input spreadsheet format.
@@ -137,8 +140,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m mamp_ml",
         description=(
-            "MAMP-ml CLI. Use `predict` for the one-shot end-to-end pipeline; "
-            "per-stage subcommands are escape hatches for debugging."
+            "MAMP-ml CLI.\n"
+            "  predict        one-shot end-to-end pipeline (spreadsheet -> predictions.csv)\n"
+            "  install-check  verify the install (PyTorch/GPU, ColabFold, weights) before a long job\n"
+            "  find-colabfold / example / fold  helpers for setup and ad-hoc folding\n"
+            "The remaining per-stage subcommands (prepare, prepare-fasta, structure-stage, "
+            "bfactor, ...) are escape hatches for debugging or re-running a single step."
         ),
         epilog=_USAGE_EXAMPLES,
         formatter_class=argparse.RawDescriptionHelpFormatter,

@@ -21,7 +21,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mamp-ml"
-version = "0.2.9"
+version = "0.2.10"
 description = "Deep-learning predictor for plant receptor-ligand (MAMP) immunogenicity using ESM-2 and structure-aware features."
 readme = "README.md"
 license = { file = "LICENSE.txt" }
