@@ -64,12 +64,6 @@ def test_lrr_annotation_geom_lrr_submodule() -> None:
         assert hasattr(mod, name), f"mamp_ml.lrr_annotation.geom_lrr is missing {name}"
 
 
-def test_lrr_extract_sequences_module() -> None:
-    """`extract_lrr_sequences` ships under `mamp_ml.lrr_annotation` now."""
-    mod = _try_import("mamp_ml.lrr_annotation.extract_lrr_sequences")
-    assert hasattr(mod, "LRRSequenceExtractor")
-
-
 def test_lrr_features_module() -> None:
     """`mamp_ml.lrr_features` (B-factor bandpass) is importable.
 

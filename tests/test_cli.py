@@ -582,13 +582,12 @@ def _copy_repo_files_into(work: Path, repo_root: Path) -> None:
     """Stage a minimal copy of the repo into ``work`` so the shell scripts
     can run without polluting the developer's checkout.
 
-    We copy only what the pipeline needs: the two shell scripts, the new
-    src/ tree (including the production cache + weights), the example
-    spreadsheet, and the legacy scripts directory (kept on PATH for full
-    repo authenticity even though the new pipeline doesn't invoke it).
+    We copy only what the pipeline needs: the shell entry point, the new
+    src/ tree (including the production cache + weights), and the example
+    spreadsheet.
     """
-    # Shell entry points
-    for name in ("prepare_input_data.sh", "run_preparation_pipeline.sh"):
+    # Shell entry point (run_preparation_pipeline.sh delegates to mamp-ml prepare)
+    for name in ("run_preparation_pipeline.sh",):
         shutil.copyfile(repo_root / name, work / name)
         os.chmod(work / name, 0o755)
     # Python source tree (includes lrr_annotation cache pickles)
