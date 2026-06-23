@@ -9,10 +9,11 @@ designed to degrade gracefully:
   out via ``NO_COLOR`` (or forced it on via ``FORCE_COLOR``), so piping the run
   to a file or a CI log stays clean and greppable.
 
-Each step prints a header line with a ``[i/N]`` tag and a *rough* time estimate
-up front, then a ``✓ <elapsed> · <summary>`` line when it finishes — so the
-user always knows where they are, roughly how long the current step should
-take, and how long it actually took.
+On a TTY the whole pipeline shares a single sticky progress bar pinned to the
+bottom (``[████░░░░] 4/8 · B-factor winding analysis``); each finished stage
+prints a one-line ``✓`` confirmation above it, and the long folding/inference
+stages update the bar's trailing detail in place. Off a TTY it degrades to
+plain ``▶``/``✓`` lines. See :class:`PipelineProgress`.
 """
 
 from __future__ import annotations
@@ -252,52 +253,69 @@ def _supports_color(stream: TextIO) -> bool:
 
 
 class Phase:
-    """Handle for one in-progress step; finish it with :meth:`done` / :meth:`fail`."""
+    """Handle for one in-progress stage; finish it with :meth:`done` / :meth:`fail`."""
 
-    def __init__(self, parent: "PipelineProgress", start: float) -> None:
+    def __init__(self, parent: "PipelineProgress", start: float, label: str) -> None:
         self._parent = parent
         self._start = start
+        self.label = label
         self.finished = False
 
     def info(self, text: str) -> None:
-        """Emit an indented sub-line under the step header (e.g. a tool path)."""
-        self._parent._emit(self._parent._dim(f"    ↳ {text}"))
+        """Emit an indented sub-line above the bar (e.g. a discovered tool path)."""
+        self._parent._line(self._parent._dim(f"    ↳ {text}"))
+
+    def detail(self, text: str) -> None:
+        """Update the live sub-progress shown inside the bar for this stage.
+
+        Used by the long folding stage to show ``folding 12/58 · <name>`` while
+        the overall bar stays on the same stage.
+        """
+        self._parent.set_detail(text)
 
     def done(self, summary: Optional[str] = None, *, target: "object | None" = None) -> None:
-        """Mark the step succeeded, printing ``✓ <elapsed> · <summary>``."""
+        """Mark the stage succeeded: print a ``✓`` line and advance the bar."""
         self.finished = True
         elapsed = format_duration(time.monotonic() - self._start)
-        line = (
-            f"  {self._parent._green('✓')} {self._parent._dim(elapsed)} "
-            f"· {summary or 'done'}"
+        self._parent._stage_finished(
+            self.label, summary or "done", target=target, elapsed=elapsed, ok=True
         )
-        self._parent._emit(line)
-        if target is not None:
-            self._parent._emit(self._parent._dim(f"     → {target}"))
 
     def fail(self, summary: Optional[str] = None) -> None:
-        """Mark the step failed, printing ``✗ <elapsed> · <summary>``."""
+        """Mark the stage failed: print a ``✗`` line and stop the bar."""
         self.finished = True
         elapsed = format_duration(time.monotonic() - self._start)
-        self._parent._emit(
-            f"  {self._parent._red('✗')} {self._parent._dim(elapsed)} "
-            f"· {summary or 'failed'}"
+        self._parent._stage_finished(
+            self.label, summary or "failed", target=None, elapsed=elapsed, ok=False
         )
 
 
 class PipelineProgress:
-    """Sequential step reporter for a fixed-size pipeline.
+    """Whole-pipeline progress reporter: one sticky bar + a ``✓`` line per stage.
+
+    On a TTY this keeps a single in-place progress bar pinned to the bottom of
+    the terminal — ``[████░░░░] 4/8 · B-factor winding analysis`` — and prints a
+    one-line ``✓`` confirmation for each finished stage *above* it. The long
+    folding/inference stages update the bar's trailing detail in place (e.g.
+    ``folding 12/58 · Solanum… (1042 aa)``). Off a TTY (a SLURM ``.out`` file, a
+    pipe, CI) it degrades to plain ``▶``/``✓`` lines with no carriage returns.
 
     Parameters
     ----------
     total_steps
-        How many *numbered* steps the run has (used for the ``[i/N]`` tag).
+        Total number of stages in the run (the bar denominator). e.g. 8 for
+        ``predict`` (FASTA, fold, LRR annotation, LRR-domain FASTA, B-factor,
+        test-data, chemical features, inference); 7 for standalone ``prepare``.
     stream
-        Where to write. Defaults to the live ``sys.stdout`` at emit time, so it
-        composes with pytest's ``capsys`` and stdout redirection.
+        Where to write. Defaults to the live ``sys.stdout`` at emit time.
     color
         Force colour on/off. ``None`` (default) auto-detects from the stream.
+    logger
+        Optional :class:`RunLogger`; every line (and stage event) is mirrored
+        there, ANSI-stripped, so the run log stays a complete transcript.
     """
+
+    _BAR_WIDTH = 24
 
     def __init__(
         self,
@@ -307,20 +325,25 @@ class PipelineProgress:
         color: Optional[bool] = None,
         logger: "Optional[RunLogger]" = None,
     ) -> None:
-        self.total = total_steps
+        self.total = max(0, int(total_steps))
         self._explicit_stream = stream
         self.color = _supports_color(self._stream) if color is None else color
-        self._n = 0
+        try:
+            self._tty = bool(self._stream.isatty())
+        except Exception:
+            self._tty = False
         self._t0 = time.monotonic()
         self.logger = logger
+        self._completed = 0      # fully-finished stages
+        self._active = False     # a stage is currently running
+        self._running = False    # between the first start() and finish()
+        self._bar_shown = False  # a bar line is currently drawn on the TTY
+        self._current_label = ""
+        self._detail = ""
 
     def attach_logger(self, logger: "Optional[RunLogger]") -> None:
-        """Attach a :class:`RunLogger` after construction.
-
-        ``predict`` builds the reporter (and prints its banner) before the
-        output directory that holds the log file exists, so the logger is
-        wired in once :func:`_run_prepare` has created that directory.
-        """
+        """Attach a :class:`RunLogger` after construction (predict prints its
+        banner before the output dir that holds the log file exists)."""
         self.logger = logger
 
     # -- stream + styling -------------------------------------------------
@@ -346,49 +369,132 @@ class PipelineProgress:
     def _red(self, text: str) -> str:
         return self._wrap(text, _RED)
 
-    def _emit(self, line: str = "") -> None:
-        print(line, file=self._stream)
+    # -- bar rendering ----------------------------------------------------
+    def _bar_text(self) -> str:
+        tot = self.total
+        # Fill reflects *completed* stages (honest); the count shows the stage
+        # currently being worked on (completed + 1 while a stage is active).
+        filled = int(self._BAR_WIDTH * (self._completed / tot)) if tot else 0
+        filled = max(0, min(self._BAR_WIDTH, filled))
+        bar = "█" * filled + "·" * (self._BAR_WIDTH - filled)
+        shown = min(self._completed + (1 if self._active else 0), tot) if tot else self._completed
+        count = f"{shown}/{tot}" if tot else f"{shown}"
+        detail = f" · {self._detail}" if self._detail else ""
+        return f"  [{bar}] {count} · {self._current_label}{detail}"
+
+    def _render_bar(self) -> None:
+        if not self._tty or self.total <= 0:
+            return
+        import shutil
+
+        cols = shutil.get_terminal_size((80, 24)).columns
+        text = self._bar_text()
+        if len(text) > cols - 1:
+            text = text[: cols - 1]
+        self._stream.write("\r" + text + "\033[K")
+        self._stream.flush()
+        self._bar_shown = True
+
+    # -- output primitives ------------------------------------------------
+    def _log(self, text: str) -> None:
         if self.logger is not None:
-            self.logger.write_line(_strip_ansi(line))
+            self.logger.write_line(_strip_ansi(text))
+
+    def _term_line(self, text: str) -> None:
+        """Print a full line to the terminal, keeping the sticky bar below it."""
+        if self._tty and self._bar_shown:
+            # Clear the bar line, print the message, then redraw the bar.
+            self._stream.write("\r\033[K" + text + "\n")
+            if self._running:
+                self._render_bar()
+            else:
+                self._bar_shown = False
+            self._stream.flush()
+        else:
+            print(text, file=self._stream)
+
+    def _line(self, text: str = "") -> None:
+        """Emit a line to both the run log and the terminal (above the bar)."""
+        self._log(text)
+        self._term_line(text)
 
     def note(self, text: str) -> None:
-        """Emit an un-styled line to both the terminal and the run log.
+        """Emit a free-standing status/hint line to the terminal and run log."""
+        self._line(text)
 
-        Used for the free-standing status/hint lines that aren't a step header
-        or summary (e.g. the truncation notice, the "running the discovered
-        colabfold_batch" line, or a failure hint) so they land in the log too.
-        """
-        self._emit(text)
+    # also expose the old name used in a couple of call sites / tests
+    def _emit(self, line: str = "") -> None:
+        self._line(line)
 
     # -- public API -------------------------------------------------------
     def banner(self, title: str, subtitle: Optional[str] = None) -> None:
-        """Print the run header. Estimates are flagged as rough up front."""
-        self._emit()
-        self._emit(self._bold(title))
+        """Print the run header (before any stage / bar)."""
+        self._line()
+        self._line(self._bold(title))
         if subtitle:
-            self._emit(self._dim(subtitle))
-        self._emit(
-            self._dim("Step time estimates are rough and scale with input size + hardware.")
-        )
-        self._emit(self._dim("─" * _RULE_WIDTH))
+            self._line(self._dim(subtitle))
+        self._line(self._dim("─" * _RULE_WIDTH))
 
-    def start(self, label: str, *, estimate: str, numbered: bool = True) -> Phase:
-        """Print a step header and return a :class:`Phase` to finish.
+    def start(self, label: str, *, estimate: "Optional[str]" = None, numbered: bool = True) -> Phase:
+        """Begin a stage: set it as current and (re)draw the bar.
 
-        ``numbered=True`` consumes the next ``[i/N]`` tag; ``False`` is for
-        interstitial phases (folding, inference) that aren't one of the N
-        counted preparation steps.
+        ``estimate`` / ``numbered`` are accepted for backwards compatibility but
+        no longer shown — every stage advances the single combined bar.
         """
-        self._emit()
-        if numbered:
-            self._n += 1
-            tag = self._bold(f"[{self._n}/{self.total}] ")
+        self._current_label = label
+        self._detail = ""
+        self._active = True
+        self._running = True
+        self._log("▶ " + label + (f"  (est. {estimate})" if estimate else ""))
+        if self._tty:
+            self._render_bar()
         else:
-            tag = ""
-        self._emit(
-            f"{self._cyan('▶')} {tag}{label}  {self._dim('· est. ' + estimate)}"
-        )
-        return Phase(self, time.monotonic())
+            print(f"{self._cyan('▶')} {label}", file=self._stream)
+        return Phase(self, time.monotonic(), label)
+
+    def set_detail(self, text: str) -> None:
+        """Update the live sub-progress inside the bar (folding receptor, …)."""
+        self._detail = text
+        if self._tty:
+            self._render_bar()
+        else:
+            line = f"    {text}"
+            print(line, file=self._stream)
+            self._log(line)
+
+    def _stage_finished(
+        self,
+        label: str,
+        summary: str,
+        *,
+        target: "object | None",
+        elapsed: str,
+        ok: bool,
+    ) -> None:
+        glyph = self._green("✓") if ok else self._red("✗")
+        plain_glyph = "✓" if ok else "✗"
+        self._log(f"  {plain_glyph} {label} · {summary} ({elapsed})")
+        if target is not None:
+            self._log(f"     → {target}")
+        if ok:
+            self._completed += 1
+        self._active = False
+        self._detail = ""
+        if not ok:
+            # A failed stage ends the run; stop the bar so error hints print
+            # cleanly underneath.
+            self._running = False
+        self._term_line(f"  {glyph} {label} {self._dim('· ' + summary)}")
+        if target is not None:
+            self._term_line(self._dim(f"     → {target}"))
+
+    def finish(self) -> None:
+        """Clear the sticky bar (call before the closing summary / on exit)."""
+        if self._tty and self._bar_shown:
+            self._stream.write("\r\033[K")
+            self._stream.flush()
+        self._bar_shown = False
+        self._running = False
 
     def complete(
         self,
@@ -396,14 +502,15 @@ class PipelineProgress:
         *,
         outputs: "Optional[List[Tuple[str, object]]]" = None,
     ) -> None:
-        """Print the closing summary with the total wall-clock time."""
+        """Clear the bar and print the closing summary with total wall time."""
+        self.finish()
         total = format_duration(time.monotonic() - self._t0)
-        self._emit()
-        self._emit(self._dim("─" * _RULE_WIDTH))
-        self._emit(
+        self._line()
+        self._line(self._dim("─" * _RULE_WIDTH))
+        self._line(
             f"{self._green('✓')} {self._bold(message)}  {self._dim('· total ' + total)}"
         )
         if outputs:
             width = max(len(label) for label, _ in outputs)
             for label, value in outputs:
-                self._emit(f"  {label.ljust(width)}  {value}")
+                self._line(f"  {label.ljust(width)}  {value}")

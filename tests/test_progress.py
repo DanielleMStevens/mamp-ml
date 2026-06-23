@@ -49,15 +49,14 @@ def _render(fn) -> str:
     return buf.getvalue()
 
 
-def test_banner_includes_title_subtitle_and_estimate_disclaimer() -> None:
+def test_banner_includes_title_and_subtitle() -> None:
     out = _render(lambda p: p.banner("mamp-ml predict", "input: x.xlsx"))
     assert "mamp-ml predict" in out
     assert "input: x.xlsx" in out
-    assert "estimates are rough" in out
     assert "─" in out  # rule
 
 
-def test_numbered_steps_increment_tag_and_finish_with_check() -> None:
+def test_stages_print_start_and_check_lines() -> None:
     def script(p: PipelineProgress) -> None:
         s1 = p.start("First", estimate="<5s")
         s1.done("did a thing", target="out/a.txt")
@@ -65,24 +64,27 @@ def test_numbered_steps_increment_tag_and_finish_with_check() -> None:
         s2.done("did another")
 
     out = _render(script)
-    assert "[1/3] First" in out
-    assert "[2/3] Second" in out
-    assert "est. <5s" in out
-    assert "✓" in out
+    # Non-TTY mode: a ▶ start line and a ✓ done line per stage (no [i/N] tags).
+    assert "▶ First" in out
+    assert "▶ Second" in out
+    assert "✓ First" in out
     assert "· did a thing" in out
     assert "→ out/a.txt" in out
 
 
-def test_unnumbered_phase_does_not_consume_a_tag() -> None:
+def test_stage_detail_updates_print_a_line_off_tty() -> None:
     def script(p: PipelineProgress) -> None:
-        p.start("Fold receptors", estimate="~5m", numbered=False).done("done")
-        p.start("First numbered", estimate="<5s").done("ok")
+        s = p.start("Fold receptors")
+        s.detail("folding 1/2 · recA (900 aa)")
+        s.detail("folding 2/2 · recB (1200 aa)")
+        s.done("2 PDBs")
 
     out = _render(script)
-    # The interstitial phase has no [i/N] tag; the first numbered step is still [1/3].
-    assert "Fold receptors" in out
-    assert "[1/3] First numbered" in out
-    assert "[0/3]" not in out
+    assert "▶ Fold receptors" in out
+    # Each detail update is a line in non-TTY mode (keeps SLURM .out readable).
+    assert "folding 1/2 · recA (900 aa)" in out
+    assert "folding 2/2 · recB (1200 aa)" in out
+    assert "✓ Fold receptors" in out
 
 
 def test_phase_fail_marks_with_cross() -> None:

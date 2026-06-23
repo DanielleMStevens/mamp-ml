@@ -126,10 +126,11 @@ and a unique output folder, so multiple runs from the same directory — e.g.
 SLURM array jobs — never collide. Works the same off-cluster; no SLURM needed.
 Pass --out-dir / --output-name to pin explicit names.
 
-The folding step shows a compact per-receptor progress bar; the backend's
-verbose output is written to mamp-ml-run.log instead of the terminal. If
-`--device cuda` is requested but the GPU can't be used, predict warns and
-falls back to `--device cpu` rather than crashing.
+On a terminal the whole pipeline shows a single combined progress bar with a
+✓ per finished stage; the long folding/inference stages update its detail in
+place (e.g. `folding 12/58 · <name>`), and the verbose backend output goes to
+mamp-ml-run.log instead of the terminal. If `--device cuda` is requested but
+the GPU can't be used, predict warns and falls back to `--device cpu`.
 
 See the README at https://github.com/DanielleMStevens/mamp-ml for the
 full workflow + input spreadsheet format.
@@ -932,11 +933,13 @@ def _run_prepare(args, *, progress=None) -> int:
     """
     from pathlib import Path
 
-    from mamp_ml.progress import FoldProgressBar, PipelineProgress, RunLogger
+    from mamp_ml.progress import PipelineProgress, RunLogger
 
     own_progress = progress is None
     if own_progress:
-        progress = PipelineProgress(6)
+        # 7 stages: FASTA, fold, LRR annotation, LRR-domain FASTA, B-factor,
+        # test-data, chemical features (no inference for standalone prepare).
+        progress = PipelineProgress(7)
         progress.banner(f"mamp-ml {getattr(args, 'cmd', 'prepare')}", _pipeline_subtitle(args))
 
     from mamp_ml.preprocess import (
@@ -1034,10 +1037,8 @@ def _run_prepare(args, *, progress=None) -> int:
             device = _resolve_torch_device(getattr(args, "device", None))
             from mamp_ml.fold.esmfold import fold_with_esmfold
 
-            bar = FoldProgressBar(n, stream=sys.stdout, label="folding")
-
             def _esm_progress(idx: int, total: int, name: str) -> None:
-                bar.update(idx, total=total, label=name)
+                fold.detail(f"folding {idx}/{total} · {name}")
 
             pdbs = fold_with_esmfold(
                 receptor_fasta,
@@ -1047,7 +1048,6 @@ def _run_prepare(args, *, progress=None) -> int:
                 on_progress=_esm_progress,
                 log=log.write_line,
             )
-            bar.finish()
             fold.done(f"{len(pdbs)} PDB(s) + log.txt", target=colabfold_dir)
         else:
             from mamp_ml.fold.colabfold import (
@@ -1107,21 +1107,17 @@ def _run_prepare(args, *, progress=None) -> int:
                 )
 
                 # Stream ColabFold's (very verbose) output into the run log and
-                # show only a compact per-receptor bar on the terminal. The bar
-                # is driven by ColabFold's own "Query i/N: <name> (length L)"
-                # lines; the total is seeded from the receptor count.
+                # show only the combined bar's live detail on the terminal,
+                # driven by ColabFold's own "Query i/N: <name> (length L)" lines.
                 from mamp_ml.fold.colabfold import COLABFOLD_QUERY_RE
-
-                bar = FoldProgressBar(n, stream=sys.stdout, label="folding")
 
                 def _colabfold_line(line: str) -> None:
                     log.write_line(line)
                     m = COLABFOLD_QUERY_RE.search(line)
                     if m:
-                        bar.update(
-                            int(m.group("i")),
-                            total=int(m.group("n")),
-                            label=f"{m.group('name')} ({m.group('length')} aa)",
+                        fold.detail(
+                            f"folding {m.group('i')}/{m.group('n')} · "
+                            f"{m.group('name')} ({m.group('length')} aa)"
                         )
 
                 rc = run_colabfold_batch(
@@ -1132,7 +1128,6 @@ def _run_prepare(args, *, progress=None) -> int:
                     num_recycle=1,
                     on_line=_colabfold_line,
                 )
-                bar.finish()
                 if rc != 0:
                     fold.fail(f"ColabFold exited with status {rc}")
                     progress.note(
@@ -1161,6 +1156,8 @@ def _run_prepare(args, *, progress=None) -> int:
                 fold.done("ColabFold finished ->", target=colabfold_dir)
                 # Fall through to the structure stage with the fresh outputs.
             else:
+                fold = progress.start("Fold receptors · ColabFold", estimate=None)
+                fold.fail("no colabfold_batch found")
                 progress.note("")
                 progress.note("ColabFold has not been run yet for this input.")
                 progress.note(
@@ -1184,8 +1181,14 @@ def _run_prepare(args, *, progress=None) -> int:
                 )
                 log.close()
                 return 2
+    else:
+        # Structures already exist for this input (a prior run, or reused via
+        # --structures): record folding as an instant, already-done stage so the
+        # combined bar's denominator stays consistent across runs.
+        fold = progress.start("Fold receptors", estimate=None)
+        fold.done("reusing existing structures", target=colabfold_dir)
 
-    # ---- Step 2/6: structure stage (LRR annotation) ----
+    # ---- Structure stage (LRR annotation) ----
     step = progress.start("Structure analysis · LRR annotation", estimate="~15–90s")
     n_lrr = run_structure_stage(
         colabfold_dir,
@@ -1301,7 +1304,8 @@ def _run_predict(args) -> int:
     # so the banner and total timer cover the whole `predict` run.
     from mamp_ml.progress import PipelineProgress
 
-    progress = PipelineProgress(6)
+    # 8 stages: the 7 prepare stages + ESM-2 inference.
+    progress = PipelineProgress(8)
     progress.banner("mamp-ml predict", _pipeline_subtitle(args))
 
     # Resolve the unique per-run working directory up front (before prepare, and
@@ -1327,6 +1331,7 @@ def _run_predict(args) -> int:
     ready_csv = out_dir / "ready_test_data.csv"
     weights = Path(args.weights) if args.weights else default_weights_path()
     if not weights.is_file():
+        progress.finish()
         progress.note(
             f"Error: model weights not found at {weights}. "
             "Pass --weights with an explicit path to a custom .pth file, or "
@@ -1337,6 +1342,7 @@ def _run_predict(args) -> int:
         return 3
     if not ready_csv.is_file():
         # Should not happen — prepare returns 0 only after producing this file.
+        progress.finish()
         progress.note(f"Error: ready_test_data.csv missing at {ready_csv}.")
         if progress.logger is not None:
             progress.logger.close()

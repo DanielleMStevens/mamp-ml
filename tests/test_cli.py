@@ -530,17 +530,18 @@ def test_cli_prepare_one_shot_full_pipeline(
     assert rc == 0
 
     captured = capsys.readouterr()
-    # All six stages must have logged a banner line.
+    # Every pipeline stage must have logged its labelled line (non-TTY mode
+    # prints `▶ <label>` / `✓ <label>` rather than the sticky bar).
     for stage_marker in (
-        "[1/6]",
-        "[2/6]",
-        "[3/6]",
-        "[4/6]",
-        "[5/6]",
-        "[6/6]",
+        "Receptor FASTA",
+        "Structure analysis",
+        "LRR-domain FASTA",
+        "B-factor winding analysis",
+        "Test-data assembly",
+        "Chemical-feature annotation",
     ):
         assert stage_marker in captured.out, (
-            f"prepare did not log {stage_marker} marker in stdout"
+            f"prepare did not log the {stage_marker!r} stage in stdout"
         )
 
     # Confirm every expected output landed.
