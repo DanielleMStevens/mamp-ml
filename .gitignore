@@ -42,3 +42,6 @@ LRR_Annotation/
 # HuggingFace model cache written next to the install by default (re-downloadable)
 model_cache/
 src/mamp_ml/model_cache/
+
+# macOS
+.DS_Store

@@ -1,13 +1,11 @@
-"""Tests for the run-log + fold progress-bar plumbing (mamp_ml.progress).
+"""Tests for the run-log plumbing (mamp_ml.progress).
 
 Covers:
 * :class:`RunLogger` — header content (command + version), line appending,
   and best-effort survival when the handle goes away.
-* :class:`FoldProgressBar` — non-TTY (one line per completed receptor) vs.
-  TTY (in-place ``\\r``) rendering.
 * :data:`COLABFOLD_QUERY_RE` — parsing ColabFold's per-receptor progress line.
 * :class:`PipelineProgress` teeing emitted lines into an attached logger,
-  with ANSI stripped.
+  with ANSI stripped, plus the per-step timing breakdown.
 """
 
 from __future__ import annotations
@@ -15,7 +13,7 @@ from __future__ import annotations
 import io
 
 from mamp_ml.fold.colabfold import COLABFOLD_QUERY_RE
-from mamp_ml.progress import FoldProgressBar, PipelineProgress, RunLogger
+from mamp_ml.progress import PipelineProgress, RunLogger
 
 
 # ---------------------------------------------------------------------------
@@ -86,39 +84,6 @@ def test_colabfold_query_regex_parses_progress_line() -> None:
 def test_colabfold_query_regex_ignores_other_lines() -> None:
     assert COLABFOLD_QUERY_RE.search("2026-06-19 02:10:09 Sleeping for 5s.") is None
     assert COLABFOLD_QUERY_RE.search("Padding length to 1343") is None
-
-
-# ---------------------------------------------------------------------------
-# FoldProgressBar
-# ---------------------------------------------------------------------------
-
-
-def test_fold_bar_non_tty_emits_one_line_per_update() -> None:
-    buf = io.StringIO()  # StringIO.isatty() is False -> non-TTY mode
-    bar = FoldProgressBar(58, stream=buf, color=False)
-    bar.update(1, total=58, label="recA (900 aa)")
-    bar.update(2, total=58, label="recB (1200 aa)")
-    bar.finish()
-    out = buf.getvalue()
-    assert "folding [1/58] recA (900 aa)" in out
-    assert "folding [2/58] recB (1200 aa)" in out
-    # Non-TTY mode must not emit carriage returns (keeps SLURM .out readable).
-    assert "\r" not in out
-
-
-def test_fold_bar_tty_renders_in_place_with_carriage_return() -> None:
-    class _TTY(io.StringIO):
-        def isatty(self) -> bool:  # noqa: D401 - trivial
-            return True
-
-    buf = _TTY()
-    bar = FoldProgressBar(2, stream=buf, color=False)
-    bar.update(1, total=2, label="recA")
-    bar.finish()
-    out = buf.getvalue()
-    assert "\r" in out  # in-place redraw
-    assert "1/2" in out
-    assert out.endswith("\n")  # finish() terminates the line
 
 
 # ---------------------------------------------------------------------------

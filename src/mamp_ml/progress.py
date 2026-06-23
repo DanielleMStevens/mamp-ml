@@ -30,7 +30,6 @@ __all__ = [
     "PipelineProgress",
     "Phase",
     "RunLogger",
-    "FoldProgressBar",
     "format_duration",
 ]
 
@@ -69,7 +68,7 @@ def format_duration(seconds: float) -> str:
 class RunLogger:
     """A plain-text transcript of one CLI run, written to a file in the output.
 
-    The terminal stays concise (numbered step lines + a fold progress bar), but
+    The terminal stays concise (a single combined progress bar), but
     everything — the exact command, the package version, every step line, and
     the *full* ColabFold / ESMFold subprocess output — is appended here so a
     failed run (e.g. an OOM-killed ColabFold, exit status ``-9``) can be
@@ -159,81 +158,6 @@ class RunLogger:
             pass
         finally:
             self._fh = None
-
-
-class FoldProgressBar:
-    """In-place progress bar for the long structure-prediction step.
-
-    Replaces the verbose ColabFold / ESMFold per-recycle output on the terminal
-    with a single advancing bar (``[23/58] ▸ folding Vitis_vinifera_… (1617 aa)``).
-    The full backend output still goes to the :class:`RunLogger`; this is purely
-    the terminal-facing summary.
-
-    Two rendering modes, chosen from whether ``stream`` is a real terminal:
-
-    * **TTY** — a true in-place bar redrawn on the same line via ``\\r``.
-    * **Non-TTY** (a SLURM ``.out`` file, a pipe, CI) — one short line *per
-      completed receptor*, so the captured stdout stays readable (no thousands
-      of carriage returns) and greppable.
-    """
-
-    _BAR_WIDTH = 24
-
-    def __init__(
-        self,
-        total: int,
-        *,
-        stream: Optional[TextIO] = None,
-        color: Optional[bool] = None,
-        label: str = "folding",
-    ) -> None:
-        self.total = max(0, int(total))
-        self._explicit_stream = stream
-        self.color = _supports_color(self._stream) if color is None else color
-        try:
-            self._tty = bool(self._stream.isatty())
-        except Exception:
-            self._tty = False
-        self._verb = label
-        self._done = 0
-        self._rendered = False
-
-    @property
-    def _stream(self) -> TextIO:
-        return self._explicit_stream if self._explicit_stream is not None else sys.stdout
-
-    def _dim(self, text: str) -> str:
-        return f"{_DIM}{text}{_RESET}" if self.color else text
-
-    def update(self, done: int, *, total: "Optional[int]" = None, label: str = "") -> None:
-        """Advance the bar to ``done`` completed items (of ``total``)."""
-        if total is not None and total > 0:
-            self.total = total
-        self._done = max(self._done, int(done))
-        n, tot = self._done, self.total
-        suffix = f" {label}" if label else ""
-        if self._tty:
-            filled = 0 if tot <= 0 else int(self._BAR_WIDTH * min(n, tot) / tot)
-            bar = "█" * filled + "·" * (self._BAR_WIDTH - filled)
-            count = f"{n}/{tot}" if tot else f"{n}"
-            text = f"  {self._verb} [{bar}] {count}{suffix}"
-            # Pad to clear any longer previous line, then return to col 0.
-            self._stream.write("\r" + text.ljust(72)[:120])
-            self._stream.flush()
-            self._rendered = True
-        else:
-            count = f"{n}/{tot}" if tot else f"{n}"
-            self._stream.write(f"  {self._verb} [{count}]{suffix}\n")
-            self._stream.flush()
-
-    def finish(self, summary: str = "") -> None:
-        """Close out the bar (newline on a TTY) and optionally print a summary."""
-        if self._tty and self._rendered:
-            self._stream.write("\n")
-            self._stream.flush()
-        if summary:
-            self._stream.write(f"  {self._dim(summary)}\n")
-            self._stream.flush()
 
 
 def _supports_color(stream: TextIO) -> bool:
