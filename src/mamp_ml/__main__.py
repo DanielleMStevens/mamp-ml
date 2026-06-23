@@ -61,6 +61,7 @@ chemical-features
 from __future__ import annotations
 
 import argparse
+import contextlib
 import shlex
 import sys
 from typing import List, Optional
@@ -1394,7 +1395,11 @@ def _run_predict(args) -> int:
     prev_cwd = Path.cwd()
     try:
         os.chdir(out_dir)
-        train.main(train_args)
+        # train.main floods stdout/stderr (model dump, state-dict listing, tqdm
+        # bars, HF warnings) and overrides builtins.print — send all of it to
+        # the run log so the terminal keeps just the progress bar.
+        with _capture_stdio_to_log(progress.logger):
+            train.main(train_args)
     except OSError as exc:
         if _is_disk_full_error(exc):
             infer.fail("disk quota / no space while caching model weights")
@@ -1592,6 +1597,58 @@ def _gpu_compatibility_problem(device_str: "str | None") -> "str | None":
     return None
 
 
+class _LogWriter:
+    """A file-like object that forwards writes to a :class:`RunLogger`.
+
+    Writing through it sends text to the run log only — never the terminal — so
+    we can redirect the verbose backend chatter off-screen while keeping it in
+    the transcript.
+    """
+
+    def __init__(self, logger) -> None:
+        self._logger = logger
+
+    def write(self, s: str) -> int:
+        if s and self._logger is not None:
+            self._logger.write(s)
+        return len(s) if s else 0
+
+    def flush(self) -> None:  # noqa: D401 - file-like contract
+        pass
+
+    def isatty(self) -> bool:
+        return False
+
+
+@contextlib.contextmanager
+def _capture_stdio_to_log(logger):
+    """Redirect ``stdout``/``stderr`` to the run log for a noisy in-process step.
+
+    Used around the ESM-2 inference (``train.main`` dumps the model namespace,
+    a state-dict listing, tqdm bars, and HuggingFace warnings, and permanently
+    overrides ``builtins.print`` via ``setup_for_distributed``) and the torch
+    GPU-capability query (which emits a multi-line "compute capability"
+    warning). The terminal then shows only the progress bar while the full
+    detail lands in ``mamp-ml-run.log``. ``builtins.print`` is saved and
+    restored so the override can't leak into the closing summary. A no-op when
+    ``logger`` is ``None`` (e.g. ``install-check``, where the warning is useful
+    on screen).
+    """
+    if logger is None:
+        yield
+        return
+    import builtins
+
+    saved = (sys.stdout, sys.stderr, builtins.print)
+    writer = _LogWriter(logger)
+    sys.stdout = writer  # type: ignore[assignment]
+    sys.stderr = writer  # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        sys.stdout, sys.stderr, builtins.print = saved
+
+
 def _resolve_inference_device(requested: "str | None", progress=None) -> str:
     """Return a device that the installed torch can actually run on.
 
@@ -1599,7 +1656,11 @@ def _resolve_inference_device(requested: "str | None", progress=None) -> str:
     warning rather than crashing minutes into inference. The bundled model is
     small, so CPU is an acceptable default.
     """
-    problem = _gpu_compatibility_problem(requested)
+    # The torch import + device query can emit a noisy multi-line "compute
+    # capability" warning; capture it to the run log instead of the terminal.
+    logger = getattr(progress, "logger", None) if progress is not None else None
+    with _capture_stdio_to_log(logger):
+        problem = _gpu_compatibility_problem(requested)
     if problem is None:
         return requested or "cpu"
     msg = (

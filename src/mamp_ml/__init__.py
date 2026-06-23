@@ -62,6 +62,6 @@ try:
     try:
         __version__: str = _pkg_version("mamp-ml")
     except PackageNotFoundError:  # pragma: no cover - source tree, not installed
-        __version__ = "0.2.16"
+        __version__ = "0.2.17"
 except ImportError:  # pragma: no cover - Python < 3.8 (unsupported)
     __version__ = "0.2.0"

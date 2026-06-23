@@ -91,6 +91,42 @@ def test_colabfold_query_regex_ignores_other_lines() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_capture_stdio_to_log_redirects_and_restores(tmp_path) -> None:
+    """The verbose-inference redirect sends stdout/stderr to the log (not the
+    terminal) and restores stdout/stderr + builtins.print afterwards."""
+    import builtins
+    import sys
+
+    from mamp_ml.__main__ import _capture_stdio_to_log
+
+    log_path = tmp_path / "run.log"
+    logger = RunLogger(log_path, command="mamp-ml predict x.xlsx", version="0.0.0")
+    orig_out, orig_err, orig_print = sys.stdout, sys.stderr, builtins.print
+
+    with _capture_stdio_to_log(logger):
+        print("verbose model dump")             # -> log
+        sys.stderr.write("a torch CC warning\n")  # -> log
+        builtins.print = lambda *a, **k: None    # simulate setup_for_distributed
+
+    # Streams + the print override are restored.
+    assert sys.stdout is orig_out
+    assert sys.stderr is orig_err
+    assert builtins.print is orig_print
+    logger.close()
+
+    text = log_path.read_text(encoding="utf-8")
+    assert "verbose model dump" in text
+    assert "a torch CC warning" in text
+
+
+def test_capture_stdio_to_log_is_noop_without_logger(capsys) -> None:
+    from mamp_ml.__main__ import _capture_stdio_to_log
+
+    with _capture_stdio_to_log(None):
+        print("still on the terminal")
+    assert "still on the terminal" in capsys.readouterr().out
+
+
 def test_complete_writes_per_step_timings_to_log(tmp_path) -> None:
     log_path = tmp_path / "run.log"
     logger = RunLogger(log_path, command="mamp-ml predict x.xlsx", version="0.2.13")
