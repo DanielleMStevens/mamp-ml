@@ -126,6 +126,24 @@ def test_fold_bar_tty_renders_in_place_with_carriage_return() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_complete_writes_per_step_timings_to_log(tmp_path) -> None:
+    log_path = tmp_path / "run.log"
+    logger = RunLogger(log_path, command="mamp-ml predict x.xlsx", version="0.2.13")
+    term = io.StringIO()
+    p = PipelineProgress(2, stream=term, color=False, logger=logger)
+    p.start("First").done("a")
+    p.start("Second").done("b")
+    p.complete("Done", outputs=[("Output", "out/")])
+    logger.close()
+
+    text = log_path.read_text(encoding="utf-8")
+    # Each ✓ line carries the step's runtime, and a consolidated block lists them.
+    assert "✓ First · a · " in text
+    assert "Step timings" in text
+    assert "First" in text and "Second" in text
+    assert "total" in text
+
+
 def test_progress_tees_lines_into_logger_without_ansi(tmp_path) -> None:
     log_path = tmp_path / "run.log"
     logger = RunLogger(log_path, command="mamp-ml predict x.xlsx", version="0.2.4")

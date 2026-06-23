@@ -276,17 +276,17 @@ class Phase:
     def done(self, summary: Optional[str] = None, *, target: "object | None" = None) -> None:
         """Mark the stage succeeded: print a ``✓`` line and advance the bar."""
         self.finished = True
-        elapsed = format_duration(time.monotonic() - self._start)
         self._parent._stage_finished(
-            self.label, summary or "done", target=target, elapsed=elapsed, ok=True
+            self.label, summary or "done", target=target,
+            seconds=time.monotonic() - self._start, ok=True,
         )
 
     def fail(self, summary: Optional[str] = None) -> None:
         """Mark the stage failed: print a ``✗`` line and stop the bar."""
         self.finished = True
-        elapsed = format_duration(time.monotonic() - self._start)
         self._parent._stage_finished(
-            self.label, summary or "failed", target=None, elapsed=elapsed, ok=False
+            self.label, summary or "failed", target=None,
+            seconds=time.monotonic() - self._start, ok=False,
         )
 
 
@@ -340,6 +340,7 @@ class PipelineProgress:
         self._bar_shown = False  # a bar line is currently drawn on the TTY
         self._current_label = ""
         self._detail = ""
+        self._timings: List[Tuple[str, float, bool]] = []  # (label, seconds, ok)
 
     def attach_logger(self, logger: "Optional[RunLogger]") -> None:
         """Attach a :class:`RunLogger` after construction (predict prints its
@@ -468,12 +469,14 @@ class PipelineProgress:
         summary: str,
         *,
         target: "object | None",
-        elapsed: str,
+        seconds: float,
         ok: bool,
     ) -> None:
+        elapsed = format_duration(seconds)
+        self._timings.append((label, seconds, ok))
         glyph = self._green("✓") if ok else self._red("✗")
         plain_glyph = "✓" if ok else "✗"
-        self._log(f"  {plain_glyph} {label} · {summary} ({elapsed})")
+        self._log(f"  {plain_glyph} {label} · {summary} · {elapsed}")
         if target is not None:
             self._log(f"     → {target}")
         if ok:
@@ -484,7 +487,10 @@ class PipelineProgress:
             # A failed stage ends the run; stop the bar so error hints print
             # cleanly underneath.
             self._running = False
-        self._term_line(f"  {glyph} {label} {self._dim('· ' + summary)}")
+        # The per-stage runtime is shown (dimmed) on the terminal too.
+        self._term_line(
+            f"  {glyph} {label} {self._dim('· ' + summary + ' · ' + elapsed)}"
+        )
         if target is not None:
             self._term_line(self._dim(f"     → {target}"))
 
@@ -514,3 +520,17 @@ class PipelineProgress:
             width = max(len(label) for label, _ in outputs)
             for label, value in outputs:
                 self._line(f"  {label.ljust(width)}  {value}")
+        self._write_timings(total)
+
+    def _write_timings(self, total: str) -> None:
+        """Append a per-step runtime breakdown to the run log (log-only)."""
+        if not self._timings or self.logger is None:
+            return
+        width = max(len(label) for label, _, _ in self._timings)
+        width = max(width, len("total"))
+        self._log("")
+        self._log("Step timings")
+        for label, seconds, ok in self._timings:
+            mark = "" if ok else "  (failed)"
+            self._log(f"  {label.ljust(width)}  {format_duration(seconds)}{mark}")
+        self._log(f"  {'total'.ljust(width)}  {total}")
