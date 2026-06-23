@@ -1772,15 +1772,34 @@ def _run_install_check(args) -> int:
 
     # --- PyTorch + whether it can drive the detected GPU ----------------
     torch_problem = False  # set when a (re)install of torch is warranted
+    # `import torch` loads hundreds of MB of native libraries and is genuinely
+    # slow on a cold cache / shared scratch filesystem (often tens of seconds).
+    # Announce it (flushed) so a slow import doesn't look like a hang.
+    print("  …  importing PyTorch (slow on first import / shared filesystems)…", flush=True)
+    import time as _time
+
+    _t0 = _time.monotonic()
     try:
         import torch
 
-        print(f"{ok} PyTorch {torch.__version__} (CUDA build: {torch.version.cuda or 'cpu-only'})")
+        _elapsed = _time.monotonic() - _t0
+        print(
+            f"{ok} PyTorch {torch.__version__} "
+            f"(CUDA build: {torch.version.cuda or 'cpu-only'}; imported in {_elapsed:.0f}s)"
+        )
     except ImportError:
         print(f"{fail} PyTorch is not installed — inference cannot run")
         torch = None
         n_fail += 1
         torch_problem = True
+    except KeyboardInterrupt:
+        print()
+        print(
+            f"{fail} Interrupted while importing PyTorch. That import is heavy and "
+            "slow off shared scratch — let it finish on a re-run, or install mamp-ml "
+            "in a dedicated environment (see the README)."
+        )
+        return 130
 
     if torch is not None:
         if not torch.cuda.is_available():
