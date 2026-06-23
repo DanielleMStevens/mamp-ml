@@ -971,6 +971,8 @@ def _run_prepare(args, *, progress=None) -> int:
         context=[
             ("input", str(xlsx_path)),
             ("device", str(getattr(args, "device", "") or "")),
+            ("gpu", _gpu_summary_for_log()),
+            ("pytorch", _torch_version_string()),
             ("structure", str(getattr(args, "structure", "") or "")),
             ("out_dir", str(out_dir)),
         ],
@@ -1739,6 +1741,38 @@ def _pip_install_torch(cmd: str) -> int:
     except OSError as exc:
         print(f"Failed to run pip: {exc}")
         return 1
+
+
+def _torch_version_string() -> str:
+    """The installed PyTorch version WITHOUT importing torch.
+
+    Reads package metadata, avoiding the heavy ``import torch`` (hundreds of MB
+    of native libs). Includes the ``+cuXXX`` local version when the wheel
+    carries one. Returns ``"not installed"`` / ``"unknown"`` on failure.
+    """
+    try:
+        from importlib.metadata import PackageNotFoundError
+        from importlib.metadata import version as _pkg_version
+
+        try:
+            return _pkg_version("torch")
+        except PackageNotFoundError:
+            return "not installed"
+    except Exception:
+        return "unknown"
+
+
+def _gpu_summary_for_log() -> str:
+    """A one-line GPU description from nvidia-smi (no torch import) for the log."""
+    info = _detect_nvidia_gpu()
+    if not info:
+        return "none detected (nvidia-smi absent)"
+    names = ", ".join(info["names"] or ["(unknown)"])
+    caps = info.get("compute_caps") or []
+    cap = f", CC {'/'.join(caps)}" if caps else ""
+    cu = info.get("driver_max_cuda")
+    drv = f", driver CUDA {cu}" if cu else ""
+    return f"{names}{cap}{drv}"
 
 
 def _run_install_check(args) -> int:

@@ -12,12 +12,15 @@ import types
 
 import pytest
 
+import mamp_ml.__main__ as cli
 from mamp_ml.__main__ import (
     _detect_nvidia_gpu,
     _gpu_compatibility_problem,
+    _gpu_summary_for_log,
     _recommend_torch_index_url,
     _recommended_torch_command,
     _resolve_inference_device,
+    _torch_version_string,
     main as cli_main,
 )
 
@@ -155,6 +158,38 @@ def test_detect_nvidia_gpu_returns_none_without_smi(monkeypatch) -> None:
 
     monkeypatch.setattr(shutil, "which", lambda _: None)
     assert _detect_nvidia_gpu() is None
+
+
+# ---------------------------------------------------------------------------
+# run-log header: gpu + pytorch (computed without importing torch)
+# ---------------------------------------------------------------------------
+
+
+def test_torch_version_string_is_nonempty() -> None:
+    # torch is a test dependency, so this resolves to a real version string;
+    # either way it must be a non-empty descriptor read from metadata (no import).
+    assert _torch_version_string()
+
+
+def test_gpu_summary_without_smi(monkeypatch) -> None:
+    monkeypatch.setattr(cli, "_detect_nvidia_gpu", lambda: None)
+    assert _gpu_summary_for_log() == "none detected (nvidia-smi absent)"
+
+
+def test_gpu_summary_formats_detected_card(monkeypatch) -> None:
+    monkeypatch.setattr(
+        cli,
+        "_detect_nvidia_gpu",
+        lambda: {
+            "names": ["Tesla V100-SXM2-32GB"],
+            "compute_caps": ["7.0"],
+            "driver_max_cuda": "13.0",
+        },
+    )
+    summary = _gpu_summary_for_log()
+    assert "Tesla V100-SXM2-32GB" in summary
+    assert "CC 7.0" in summary
+    assert "driver CUDA 13.0" in summary
 
 
 # ---------------------------------------------------------------------------
